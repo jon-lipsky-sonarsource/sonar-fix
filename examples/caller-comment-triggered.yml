@@ -1,0 +1,142 @@
+# =============================================================================
+# Caller Workflow: SonarQube Auto-Fix — Triggered by SonarCloud PR Comment
+# =============================================================================
+# This workflow fires when SonarCloud (or SonarQube Cloud) posts its analysis
+# summary comment on a PR. This is the recommended trigger because:
+#
+#   1. It guarantees the analysis is complete — no polling, no sleep
+#   2. It works with both CI-based and automatic analysis
+#   3. It eliminates the need to run the scan in this workflow
+#   4. Clear paper trail: SonarCloud comments → this workflow triggers → agent fixes
+#
+# The workflow detects the SonarCloud bot comment, resolves the PR details,
+# checks whether the quality gate failed, and calls the reusable workflow.
+#
+# Prerequisites:
+#   - SonarCloud PR summary comments enabled:
+#     Administration → Pull Requests → Integration with GitHub → Enable summary
+#   - Repository secrets: SONAR_TOKEN, ANTHROPIC_API_KEY
+#   - Repository variables: SONAR_PROJECT_KEY, SONAR_ORG
+#   - .github/sonar-autofix-config.yml in this repo
+#
+# Bot usernames by product:
+#   - SonarCloud (sonarcloud.io):     sonarcloud[bot]
+#   - SonarQube Cloud (sonarqube.com): SonarQubeCloud[bot]
+#   Adjust the SONAR_BOT_LOGIN value below to match your product.
+# =============================================================================
+
+name: "SonarQube Auto-Fix (Comment Triggered)"
+
+on:
+  # Fires when any comment is created on an issue or PR
+  issue_comment:
+    types: [created]
+
+env:
+  # Change this to match your SonarQube product's bot username.
+  # Check a recent PR comment from SonarCloud to confirm the exact login.
+  SONAR_BOT_LOGIN: "sonarcloud[bot]"
+
+jobs:
+  # =========================================================================
+  # Job 1: Detect SonarCloud comment and resolve PR context
+  # =========================================================================
+  detect-and-resolve:
+    name: "Detect SonarCloud Comment"
+    runs-on: ubuntu-latest
+
+    # Only run if:
+    #   1. The comment is on a pull request (not a plain issue)
+    #   2. The comment author is the SonarCloud bot
+    #   3. The comment contains quality gate results (not just a notification)
+    if: |
+      github.event.issue.pull_request &&
+      github.event.comment.user.login == 'sonarcloud[bot]' &&
+      contains(github.event.comment.body, 'Quality Gate')
+
+    outputs:
+      pr_number: ${{ steps.pr-info.outputs.pr_number }}
+      pr_branch: ${{ steps.pr-info.outputs.pr_branch }}
+      quality_gate_failed: ${{ steps.parse-comment.outputs.quality_gate_failed }}
+      should_run: ${{ steps.decide.outputs.should_run }}
+
+    steps:
+      - name: Resolve PR details
+        id: pr-info
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // issue_comment events for PRs have issue.pull_request.url
+            // but not the full PR object. Fetch it.
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.issue.number,
+            });
+
+            core.setOutput('pr_number', pr.number);
+            core.setOutput('pr_branch', pr.head.ref);
+            core.setOutput('pr_state', pr.state);
+
+            console.log(`PR #${pr.number} — branch: ${pr.head.ref}, state: ${pr.state}`);
+
+      - name: Parse quality gate status from comment
+        id: parse-comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.comment.body;
+
+            // SonarCloud comments contain "Quality Gate passed" or "Quality Gate failed"
+            // They may also use emoji: ✅ (passed) or ❌ (failed)
+            const passed = body.includes('Quality Gate passed') ||
+                           body.includes('✅');
+            const failed = body.includes('Quality Gate failed') ||
+                           body.includes('❌');
+
+            core.setOutput('quality_gate_failed', failed ? 'true' : 'false');
+            core.setOutput('quality_gate_passed', passed ? 'true' : 'false');
+
+            console.log(`Quality gate: ${failed ? 'FAILED' : passed ? 'PASSED' : 'UNKNOWN'}`);
+
+      - name: Decide whether to run auto-fix
+        id: decide
+        run: |
+          PR_STATE="${{ steps.pr-info.outputs.pr_state }}"
+          QG_FAILED="${{ steps.parse-comment.outputs.quality_gate_failed }}"
+
+          # Don't run on closed/merged PRs
+          if [ "$PR_STATE" != "open" ]; then
+            echo "PR is not open (state=$PR_STATE). Skipping."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Run if quality gate failed, or if comment indicates issues exist
+          # You can change this to always run (even on pass) by setting should_run=true
+          if [ "$QG_FAILED" = "true" ]; then
+            echo "Quality gate failed. Running auto-fix."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Quality gate passed. Skipping auto-fix."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # =========================================================================
+  # Job 2: Call the reusable auto-fix workflow
+  # =========================================================================
+  autofix:
+    name: "Auto-Fix"
+    needs: detect-and-resolve
+    if: needs.detect-and-resolve.outputs.should_run == 'true'
+    uses: my-org/sonar-autofix/.github/workflows/path2-claude-autofix.yml@v1
+    with:
+      sonar-project-key: ${{ vars.SONAR_PROJECT_KEY }}
+      sonar-org: ${{ vars.SONAR_ORG }}
+      pr-number: ${{ fromJSON(needs.detect-and-resolve.outputs.pr_number) }}
+      pr-branch: ${{ needs.detect-and-resolve.outputs.pr_branch }}
+      enable-agentic-analysis: true
+      run-sonar-scan: false   # Analysis already ran — SonarCloud told us so!
+      # config-path: ".github/sonar-autofix-config.yml"
+      # claude-model: "claude-sonnet-4-6"
+    secrets: inherit

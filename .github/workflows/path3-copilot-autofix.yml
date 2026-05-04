@@ -1,0 +1,206 @@
+# =============================================================================
+# Reusable Workflow: SonarQube + Copilot Coding Agent Auto-Fix (Path 3)
+# =============================================================================
+# Central org-wide workflow. Individual repos call this with minimal config.
+#
+# Prerequisites for the calling repo:
+#   - Copilot coding agent enabled (Settings > Copilot > Coding agent)
+#   - SonarQube MCP server configured in Copilot's MCP settings
+#     (see copilot-mcp-setup.json in this repo)
+#   - COPILOT_MCP_SONAR_TOKEN and COPILOT_MCP_SONAR_ORG as Copilot env secrets
+#
+# Called from a repo like:
+#   jobs:
+#     sonar-autofix:
+#       uses: my-org/sonar-autofix/.github/workflows/path3-copilot-autofix.yml@v1
+#       with:
+#         sonar-project-key: my-org_my-repo
+#       secrets: inherit
+# =============================================================================
+
+name: "Reusable: SonarQube + Copilot Auto-Fix"
+
+on:
+  workflow_call:
+    inputs:
+      sonar-project-key:
+        description: "SonarQube project key"
+        required: true
+        type: string
+      pr-number:
+        description: "Pull request number"
+        required: true
+        type: number
+      pr-branch:
+        description: "Pull request head branch name"
+        required: true
+        type: string
+      config-path:
+        description: "Path to sonar-autofix-config.yml (relative to calling repo)"
+        required: false
+        type: string
+        default: ".github/sonar-autofix-config.yml"
+      sonar-host-url:
+        description: "SonarQube host URL"
+        required: false
+        type: string
+        default: "https://sonarcloud.io"
+      run-sonar-scan:
+        description: "Whether to run sonar scan"
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      SONAR_TOKEN:
+        description: "SonarQube user token"
+        required: true
+      COPILOT_PAT:
+        description: "GitHub PAT (classic, repo scope) from a Copilot subscriber"
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  # =========================================================================
+  # Job 1: Scan and Triage
+  # =========================================================================
+  scan-and-triage:
+    name: "Scan & Triage"
+    runs-on: ubuntu-latest
+    outputs:
+      has_issues: ${{ steps.triage.outputs.has_issues }}
+      has_auto_fix: ${{ steps.triage.outputs.has_auto_fix }}
+      agent: ${{ steps.triage.outputs.agent }}
+      issues_json: ${{ steps.triage.outputs.issues_json }}
+    steps:
+      - name: Checkout calling repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run SonarQube scan
+        if: inputs.run-sonar-scan
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
+
+      - name: Wait for analysis
+        if: inputs.run-sonar-scan
+        run: sleep 15
+
+      - name: Checkout sonar-autofix repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sonar-autofix
+          path: .sonar-autofix-action
+
+      - name: Triage issues
+        id: triage
+        uses: ./.sonar-autofix-action/triage-action
+        with:
+          config-path: ${{ inputs.config-path }}
+          project-key: ${{ inputs.sonar-project-key }}
+          branch: ${{ inputs.pr-branch }}
+          pr-number: ${{ inputs.pr-number }}
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
+
+  # =========================================================================
+  # Job 2: Post review-only comments
+  # =========================================================================
+  post-review-comments:
+    name: "Post Review Comments"
+    needs: scan-and-triage
+    if: needs.scan-and-triage.outputs.has_issues == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post review-only issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issuesData = ${{ needs.scan-and-triage.outputs.issues_json }};
+            const reviewOnly = issuesData.review_only || [];
+            if (reviewOnly.length === 0) return;
+
+            const severityEmoji = {
+              BLOCKER: '🔴', CRITICAL: '🟠', MAJOR: '🟡',
+              MINOR: '🔵', INFO: '⚪'
+            };
+
+            let body = `## 🔍 SonarQube Issues — Requires Human Review\n\n`;
+            for (const issue of reviewOnly) {
+              const emoji = severityEmoji[issue.severity] || '❓';
+              body += `- ${emoji} **\`${issue.rule}\`** in \`${issue.component}\``;
+              if (issue.line) body += `:${issue.line}`;
+              body += ` — ${issue.message}\n`;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ inputs.pr-number }},
+              body
+            });
+
+  # =========================================================================
+  # Job 3: Dispatch to Copilot via @copilot PR comment
+  # =========================================================================
+  copilot-autofix:
+    name: "Copilot Auto-Fix"
+    needs: scan-and-triage
+    if: |
+      needs.scan-and-triage.outputs.has_auto_fix == 'true' &&
+      (needs.scan-and-triage.outputs.agent == 'copilot' ||
+       needs.scan-and-triage.outputs.agent == 'both')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Copilot via @copilot comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            const issuesData = ${{ needs.scan-and-triage.outputs.issues_json }};
+            const autoFix = issuesData.auto_fix || [];
+
+            if (autoFix.length === 0) return;
+
+            const issueList = autoFix.map(i => {
+              let entry = `- **\`${i.rule}\`** [${i.severity}] in \`${i.component}\``;
+              if (i.line) entry += `:${i.line}`;
+              entry += `\n  ${i.message}`;
+              return entry;
+            }).join('\n');
+
+            const body = `@copilot Please fix the following SonarQube code quality issues.
+
+            ## Instructions
+
+            1. Use the SonarQube MCP server to look up each rule's full description.
+            2. Read the affected file, understand context, apply a targeted fix.
+            3. Keep changes minimal — fix only what's needed for each issue.
+            4. If unsure, skip and explain why.
+            5. Commit: "fix: resolve SonarQube issues (automated by Copilot)"
+
+            ## Issues to Fix (${autoFix.length})
+
+            ${issueList}
+
+            ## Guardrails
+
+            - Do NOT modify test files unless the issue is in a test.
+            - Do NOT refactor beyond what's needed.
+            - Push fixes as commits to this PR branch.`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ inputs.pr-number }},
+              body
+            });
+
+            console.log(`Posted @copilot comment with ${autoFix.length} issues.`);

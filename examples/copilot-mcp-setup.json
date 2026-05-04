@@ -1,0 +1,41 @@
+{
+  "_comment": [
+    "==========================================================================",
+    "Copilot Coding Agent — SonarQube MCP Server Configuration",
+    "==========================================================================",
+    "Paste this JSON into your repository settings at:",
+    "  Settings > Code & automation > Copilot > Coding agent > MCP configuration",
+    "",
+    "Before configuring, add these secrets to the Copilot environment:",
+    "  COPILOT_MCP_SONAR_TOKEN  → Your SonarQube user token",
+    "  COPILOT_MCP_SONAR_ORG    → Your SonarQube Cloud organization key",
+    "",
+    "For SonarQube Server (self-hosted), also add:",
+    "  COPILOT_MCP_SONAR_URL    → Your server URL (e.g. https://sonar.mycompany.com)",
+    "  ...and uncomment the SONAR_URL line below.",
+    "",
+    "Only secrets prefixed with COPILOT_MCP_ are available to the agent.",
+    "=========================================================================="
+  ],
+
+  "mcpServers": {
+    "sonarqube": {
+      "type": "local",
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--init",
+        "--pull=always",
+        "-e", "SONARQUBE_TOKEN=$SONAR_TOKEN",
+        "-e", "SONARQUBE_ORG=$SONAR_ORG"
+      ],
+      "env": {
+        "SONAR_TOKEN": "COPILOT_MCP_SONAR_TOKEN",
+        "SONAR_ORG": "COPILOT_MCP_SONAR_ORG"
+      },
+      "tools": ["*"]
+    }
+  }
+}

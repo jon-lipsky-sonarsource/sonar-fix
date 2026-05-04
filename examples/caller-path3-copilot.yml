@@ -1,0 +1,28 @@
+# =============================================================================
+# Caller Workflow: SonarQube Auto-Fix with Copilot — PR-Triggered
+# =============================================================================
+# Required secrets: SONAR_TOKEN, COPILOT_PAT
+# Required variables: SONAR_PROJECT_KEY
+#
+# The comment-triggered variant (caller-comment-triggered.yml) also works
+# with Path 3 — just change the reusable workflow reference.
+# =============================================================================
+
+name: "SonarQube Auto-Fix (Copilot)"
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+concurrency:
+  group: sonar-autofix-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  sonar-autofix:
+    uses: my-org/sonar-autofix/.github/workflows/path3-copilot-autofix.yml@v1
+    with:
+      sonar-project-key: ${{ vars.SONAR_PROJECT_KEY }}
+      pr-number: ${{ github.event.pull_request.number }}
+      pr-branch: ${{ github.head_ref }}
+    secrets: inherit

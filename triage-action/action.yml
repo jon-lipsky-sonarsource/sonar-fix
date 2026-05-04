@@ -1,0 +1,69 @@
+# =============================================================================
+# Composite Action: SonarQube Issue Triage
+# =============================================================================
+# Fetches SonarQube issues for a PR, categorizes them against the autofix
+# config, and outputs structured JSON for agent dispatch.
+#
+# Usage:
+#   - uses: my-org/sonar-autofix/.github/actions/triage@v1
+#     with:
+#       config-path: .github/sonar-autofix-config.yml
+#       project-key: my-org_my-repo
+#       branch: feature/my-branch
+#       pr-number: "42"
+#     env:
+#       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+#       SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+# =============================================================================
+
+name: "SonarQube Issue Triage"
+description: "Fetch and categorize SonarQube issues for AI auto-fix dispatch"
+
+inputs:
+  config-path:
+    description: "Path to sonar-autofix-config.yml in the calling repo"
+    required: true
+    default: ".github/sonar-autofix-config.yml"
+  project-key:
+    description: "SonarQube project key"
+    required: true
+  branch:
+    description: "Git branch name"
+    required: false
+  pr-number:
+    description: "Pull request number (for SonarCloud PR analysis)"
+    required: false
+
+outputs:
+  has_issues:
+    description: "Whether any issues were found"
+    value: ${{ steps.triage.outputs.has_issues }}
+  has_auto_fix:
+    description: "Whether any auto-fixable issues were found"
+    value: ${{ steps.triage.outputs.has_auto_fix }}
+  agent:
+    description: "Which agent to use (claude, copilot, both)"
+    value: ${{ steps.triage.outputs.agent }}
+  issues_json:
+    description: "Full triaged issues JSON"
+    value: ${{ steps.triage.outputs.issues_json }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install dependencies
+      shell: bash
+      run: pip install pyyaml --quiet
+
+    - name: Run triage
+      id: triage
+      shell: bash
+      env:
+        SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+        SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+      run: |
+        python3 "${{ github.action_path }}/triage_sonar_issues.py" \
+          --config "${{ inputs.config-path }}" \
+          --project-key "${{ inputs.project-key }}" \
+          --branch "${{ inputs.branch }}" \
+          --pr-number "${{ inputs.pr-number }}"

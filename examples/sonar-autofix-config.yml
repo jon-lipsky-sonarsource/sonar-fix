@@ -1,0 +1,136 @@
+# =============================================================================
+# SonarQube Auto-Fix Configuration
+# =============================================================================
+# This file controls which SonarQube issues are automatically fixed by an AI
+# agent vs. which are flagged as PR comments for human review.
+#
+# Hierarchy: rule-level overrides > path exclusions > severity/type filters
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Agent selection
+# ---------------------------------------------------------------------------
+# Which AI agent(s) to use for auto-fixing:
+#   - "claude"   → Claude Code Action (runs in the Actions runner)
+#   - "copilot"  → GitHub Copilot coding agent (runs in Copilot's environment)
+#   - "both"     → Claude fixes auto-fixable issues; Copilot gets complex ones
+agent: claude
+
+# ---------------------------------------------------------------------------
+# Auto-fix filters
+# ---------------------------------------------------------------------------
+# Issues matching ALL of these criteria are eligible for automatic fixing.
+# The agent will attempt to fix them and push commits to the PR branch.
+auto_fix:
+  # Minimum severity to auto-fix. Options: BLOCKER, CRITICAL, MAJOR, MINOR, INFO
+  severities:
+    - BLOCKER
+    - CRITICAL
+    - MAJOR
+
+  # Issue types to auto-fix. Options: BUG, CODE_SMELL, VULNERABILITY, SECURITY_HOTSPOT
+  types:
+    - BUG
+    - CODE_SMELL
+
+  # Rule-level overrides — these take precedence over severity/type filters
+  rules:
+    # Always auto-fix these rules (even if severity/type wouldn't match)
+    allow:
+      - "java:S1135"       # Track uses of "TODO" tags
+      - "java:S1481"       # Unused local variables
+      - "java:S106"        # Replace System.out with logger
+      - "java:S1172"       # Unused method parameters
+      - "java:S1186"       # Add a nested comment to empty methods
+      - "java:S1118"       # Utility classes should not have public constructors
+      - "java:S2095"       # Resources should be closed
+      - "java:S2259"       # Null pointers should not be dereferenced
+      - "python:S1481"     # Unused local variables
+      - "python:S905"      # Non-empty statements with no side effects
+      - "typescript:S1128"  # Unused imports
+      - "typescript:S1854"  # Dead stores
+      # Add more rules as confidence grows
+
+    # NEVER auto-fix these rules (even if severity/type would match).
+    # These require human judgment — security-sensitive, architectural, etc.
+    deny:
+      - "java:S2076"       # OS command injection
+      - "java:S2078"       # LDAP injection
+      - "java:S2631"       # Regex complexity
+      - "java:S3649"       # SQL injection
+      - "java:S5131"       # XSS
+      - "java:S5145"       # Log injection
+      - "java:S5542"       # Encryption algorithm strength
+      - "python:S5131"     # XSS
+      - "python:S3649"     # SQL injection
+      # Catch-all: never auto-fix any security hotspot
+      - "SECURITY_HOTSPOT:*"
+
+# ---------------------------------------------------------------------------
+# Path exclusions
+# ---------------------------------------------------------------------------
+# Files matching these globs are NEVER auto-fixed, even if their issues
+# would otherwise qualify. The agent will still report them as PR comments.
+paths:
+  exclude:
+    - "**/*.generated.*"
+    - "**/*.g.dart"
+    - "**/generated/**"
+    - "**/migrations/**"
+    - "**/vendor/**"
+    - "**/node_modules/**"
+    - "**/*.min.js"
+    - "**/*.min.css"
+
+# ---------------------------------------------------------------------------
+# Review-only mode
+# ---------------------------------------------------------------------------
+# Issues matching these criteria are posted as informational PR comments
+# but are NOT auto-fixed. This is the "flag for human review" bucket.
+review_only:
+  severities:
+    - MINOR
+    - INFO
+
+  types:
+    - VULNERABILITY
+    - SECURITY_HOTSPOT
+
+# ---------------------------------------------------------------------------
+# Safety guardrails
+# ---------------------------------------------------------------------------
+guardrails:
+  # Maximum number of issues to auto-fix in a single PR run.
+  # Prevents runaway costs and overwhelming diffs.
+  max_issues_per_run: 15
+
+  # Maximum fix-scan-fix iterations (if using agentic analysis for verification).
+  # After this many cycles, the agent stops and reports remaining issues.
+  max_iterations: 3
+
+  # Maximum turns for the Claude Code agent per run.
+  # This caps the total agentic loop length.
+  max_turns: 25
+
+  # If true, the agent will run the project's test suite after fixing and
+  # revert changes that cause test failures. Requires tests to be runnable
+  # in the Actions runner.
+  run_tests_after_fix: false
+
+  # If true, the agent must re-scan with SonarQube after fixing to verify
+  # the fix resolved the issue without introducing new ones.
+  # Requires enable-agentic-analysis: true in the workflow, which gives the
+  # agent access to run_advanced_code_analysis via the MCP server.
+  # When enabled, the agent runs the Guide → Fix → Verify loop from the
+  # SonarSource getting-started-agentic-analysis-claude-code reference.
+  verify_fixes: true
+
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+notifications:
+  # Post a summary comment on the PR after the auto-fix run completes.
+  post_summary: true
+
+  # If true, tag the PR author when issues are flagged for review-only.
+  tag_author_on_review_only: false

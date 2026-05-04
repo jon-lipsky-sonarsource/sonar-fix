@@ -1,0 +1,381 @@
+# =============================================================================
+# Reusable Workflow: SonarQube + Claude Code Auto-Fix (Path 2)
+# =============================================================================
+# Central org-wide workflow. Individual repos call this with minimal config.
+#
+# Supports two trigger modes:
+#   1. PR-triggered: caller fires on pull_request events, passes PR context
+#   2. Comment-triggered: caller fires when SonarCloud posts its analysis
+#      comment, resolves PR context, and passes it here
+#
+# Both modes call this same reusable workflow. The caller is responsible for
+# resolving pr-number and pr-branch and passing them as inputs.
+#
+# Called from a repo like:
+#   jobs:
+#     sonar-autofix:
+#       uses: my-org/sonar-autofix/.github/workflows/path2-claude-autofix.yml@v1
+#       with:
+#         sonar-project-key: my-org_my-repo
+#         pr-number: 42
+#         pr-branch: feature/my-branch
+#       secrets: inherit
+# =============================================================================
+
+name: "Reusable: SonarQube + Claude Auto-Fix"
+
+on:
+  workflow_call:
+    inputs:
+      sonar-project-key:
+        description: "SonarQube project key (e.g. my-org_my-repo)"
+        required: true
+        type: string
+      pr-number:
+        description: "Pull request number"
+        required: true
+        type: number
+      pr-branch:
+        description: "Pull request head branch name"
+        required: true
+        type: string
+      sonar-org:
+        description: "SonarQube Cloud organization key"
+        required: false
+        type: string
+        default: ""
+      config-path:
+        description: "Path to sonar-autofix-config.yml (relative to calling repo)"
+        required: false
+        type: string
+        default: ".github/sonar-autofix-config.yml"
+      sonar-host-url:
+        description: "SonarQube host URL"
+        required: false
+        type: string
+        default: "https://sonarcloud.io"
+      claude-model:
+        description: "Claude model to use"
+        required: false
+        type: string
+        default: "claude-sonnet-4-6"
+      run-sonar-scan:
+        description: "Whether to run sonar scan (false if scan runs in a separate workflow)"
+        required: false
+        type: boolean
+        default: true
+      enable-agentic-analysis:
+        description: >
+          Enable SonarQube Agentic Analysis and Context Augmentation.
+          When true, the MCP server is configured with the analysis and cag
+          toolsets, the workspace is volume-mounted for file access, and the
+          agent prompt uses the Guide → Generate → Verify loop (get_guidelines
+          before fixing, run_advanced_code_analysis after) to self-verify fixes.
+          Requires SonarQube Cloud Team or Enterprise plan with Agentic Analysis
+          enabled, and a prior CI scan on the branch.
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      SONAR_TOKEN:
+        description: "SonarQube user token"
+        required: true
+      ANTHROPIC_API_KEY:
+        description: "Anthropic API key"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  # =========================================================================
+  # Job 1: Scan (optional) and Triage
+  # =========================================================================
+  scan-and-triage:
+    name: "Scan & Triage"
+    runs-on: ubuntu-latest
+    outputs:
+      has_issues: ${{ steps.triage.outputs.has_issues }}
+      has_auto_fix: ${{ steps.triage.outputs.has_auto_fix }}
+      agent: ${{ steps.triage.outputs.agent }}
+      issues_json: ${{ steps.triage.outputs.issues_json }}
+    steps:
+      - name: Checkout calling repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run SonarQube scan
+        if: inputs.run-sonar-scan
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
+
+      - name: Wait for analysis
+        if: inputs.run-sonar-scan
+        run: sleep 15
+
+      # Checkout the central repo to get the composite action
+      - name: Checkout sonar-autofix repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sonar-autofix
+          path: .sonar-autofix-action
+          # Uses the default GITHUB_TOKEN — works for internal/public repos.
+          # For private repos, you may need a PAT.
+
+      - name: Triage issues
+        id: triage
+        uses: ./.sonar-autofix-action/triage-action
+        with:
+          config-path: ${{ inputs.config-path }}
+          project-key: ${{ inputs.sonar-project-key }}
+          branch: ${{ inputs.pr-branch }}
+          pr-number: ${{ inputs.pr-number }}
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
+
+  # =========================================================================
+  # Job 2: Post review-only comments
+  # =========================================================================
+  post-review-comments:
+    name: "Post Review Comments"
+    needs: scan-and-triage
+    if: needs.scan-and-triage.outputs.has_issues == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post review-only issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issuesData = ${{ needs.scan-and-triage.outputs.issues_json }};
+            const reviewOnly = issuesData.review_only || [];
+            const summary = issuesData.summary || {};
+
+            if (reviewOnly.length === 0) {
+              console.log('No review-only issues to post.');
+              return;
+            }
+
+            const severityEmoji = {
+              BLOCKER: '🔴', CRITICAL: '🟠', MAJOR: '🟡',
+              MINOR: '🔵', INFO: '⚪'
+            };
+
+            let body = `## 🔍 SonarQube Issues — Requires Human Review\n\n`;
+            body += `> These issues need manual attention per your `;
+            body += `[autofix config](${{ inputs.config-path }}).\n\n`;
+
+            // Group by severity
+            const grouped = {};
+            for (const issue of reviewOnly) {
+              const sev = issue.severity || 'UNKNOWN';
+              if (!grouped[sev]) grouped[sev] = [];
+              grouped[sev].push(issue);
+            }
+
+            for (const [sev, issues] of Object.entries(grouped)) {
+              const emoji = severityEmoji[sev] || '❓';
+              body += `### ${emoji} ${sev} (${issues.length})\n\n`;
+              body += `| Rule | File | Line | Message |\n`;
+              body += `|------|------|------|---------|\n`;
+              for (const i of issues) {
+                const msg = i.message.length > 80
+                  ? i.message.slice(0, 77) + '...' : i.message;
+                body += `| \`${i.rule}\` | \`${i.component}\` | ${i.line || '—'} | ${msg} |\n`;
+              }
+              body += `\n`;
+            }
+
+            body += `---\n`;
+            body += `*${summary.total_issues || '?'} total · `;
+            body += `${summary.auto_fix_count || 0} auto-fixing · `;
+            body += `${reviewOnly.length} for review*`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ inputs.pr-number }},
+              body
+            });
+
+  # =========================================================================
+  # Job 3: Claude Code auto-fix
+  # =========================================================================
+  claude-autofix:
+    name: "Claude Auto-Fix"
+    needs: scan-and-triage
+    if: |
+      needs.scan-and-triage.outputs.has_auto_fix == 'true' &&
+      (needs.scan-and-triage.outputs.agent == 'claude' ||
+       needs.scan-and-triage.outputs.agent == 'both')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.pr-branch }}
+          fetch-depth: 0
+
+      - name: Create MCP config
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_ORG: ${{ inputs.sonar-org }}
+          SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
+          SONAR_PROJECT_KEY: ${{ inputs.sonar-project-key }}
+          ENABLE_AGENTIC: ${{ inputs.enable-agentic-analysis }}
+        run: |
+          # Determine toolsets and extra env vars based on agentic analysis flag
+          if [ "$ENABLE_AGENTIC" = "true" ]; then
+            TOOLSETS="cag,projects,analysis,issues,quality-gates,rules"
+            ADVANCED_FLAG="true"
+          else
+            TOOLSETS="issues,projects,quality-gates,rules"
+            ADVANCED_FLAG="false"
+          fi
+
+          # Get the workspace path for volume mount (agentic analysis needs this)
+          WORKSPACE_DIR="$(pwd)"
+
+          # Build docker args — always include workspace mount for file access
+          # and all env vars the MCP server needs
+          if [ -n "$SONAR_ORG" ]; then
+            # SonarQube Cloud
+            cat > /tmp/sonar-mcp-config.json << MCPEOF
+          {
+            "mcpServers": {
+              "sonarqube": {
+                "command": "docker",
+                "args": [
+                  "run", "--rm", "-i", "--init", "--pull=never",
+                  "-e", "SONARQUBE_TOKEN",
+                  "-e", "SONARQUBE_ORG",
+                  "-e", "SONARQUBE_URL",
+                  "-e", "SONARQUBE_PROJECT_KEY",
+                  "-e", "SONARQUBE_TOOLSETS",
+                  "-e", "SONARQUBE_ADVANCED_ANALYSIS_ENABLED",
+                  "-v", "${WORKSPACE_DIR}:/app/mcp-workspace:rw",
+                  "mcp/sonarqube"
+                ],
+                "env": {
+                  "SONARQUBE_TOKEN": "${SONAR_TOKEN}",
+                  "SONARQUBE_ORG": "${SONAR_ORG}",
+                  "SONARQUBE_URL": "${SONAR_HOST_URL}",
+                  "SONARQUBE_PROJECT_KEY": "${SONAR_PROJECT_KEY}",
+                  "SONARQUBE_TOOLSETS": "${TOOLSETS}",
+                  "SONARQUBE_ADVANCED_ANALYSIS_ENABLED": "${ADVANCED_FLAG}"
+                }
+              }
+            }
+          }
+          MCPEOF
+          else
+            # SonarQube Server (no org, no agentic analysis)
+            cat > /tmp/sonar-mcp-config.json << MCPEOF
+          {
+            "mcpServers": {
+              "sonarqube": {
+                "command": "docker",
+                "args": [
+                  "run", "--rm", "-i", "--init", "--pull=never",
+                  "-e", "SONARQUBE_TOKEN",
+                  "-e", "SONARQUBE_URL",
+                  "-e", "SONARQUBE_PROJECT_KEY",
+                  "-e", "SONARQUBE_TOOLSETS",
+                  "-v", "${WORKSPACE_DIR}:/app/mcp-workspace:rw",
+                  "mcp/sonarqube"
+                ],
+                "env": {
+                  "SONARQUBE_TOKEN": "${SONAR_TOKEN}",
+                  "SONARQUBE_URL": "${SONAR_HOST_URL}",
+                  "SONARQUBE_PROJECT_KEY": "${SONAR_PROJECT_KEY}",
+                  "SONARQUBE_TOOLSETS": "${TOOLSETS}"
+                }
+              }
+            }
+          }
+          MCPEOF
+          fi
+
+          echo "MCP config written with toolsets=${TOOLSETS}, agentic=${ADVANCED_FLAG}"
+          cat /tmp/sonar-mcp-config.json
+
+      - name: Pull MCP server image
+        run: docker pull mcp/sonarqube
+
+      - name: Run Claude Code to fix issues
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+          prompt: |
+            You are an expert code quality remediation agent. Fix the following
+            SonarQube issues identified in this pull request using the
+            Guide → Generate → Verify loop.
+
+            ## Issues to Fix
+
+            ```json
+            ${{ toJSON(fromJSON(needs.scan-and-triage.outputs.issues_json).auto_fix) }}
+            ```
+
+            ## Workflow — Guide → Fix → Verify
+
+            ### Step 1: GUIDE (Context Augmentation)
+            Before making any changes, gather context:
+            - Call `get_guidelines` with mode "combined" and categories relevant to
+              the issues (e.g. "Code Complexity & Maintainability",
+              "Naming Conventions & Code Style", "Exception/Error Handling",
+              "Type System & Generics") and the primary language of the files.
+            - If modifying existing classes, call `get_current_architecture` to
+              understand package structure and `get_type_hierarchy` or
+              `get_references` to understand usage patterns.
+            - Use this context to inform your fixes — avoid patterns the guidelines
+              flag, and follow existing architectural conventions.
+
+            ### Step 2: FIX (Generate)
+            For each issue:
+            1. Look up the full rule description using `get_rule_details` or
+               `search_sonar_rules`. Read the compliant/non-compliant examples.
+            2. Read the affected file and understand the surrounding context.
+            3. Apply a minimal, targeted fix that resolves the issue while
+               maintaining the code's existing behavior.
+            4. If a fix requires structural refactoring (e.g. extracting a class
+               to reduce parameter count, or restructuring a loop), do it
+               thoughtfully — don't just suppress the symptom.
+            5. If unsure about a fix, skip it and note why.
+
+            ### Step 3: VERIFY (Agentic Analysis)
+            After fixing all issues in a file:
+            ${{ inputs.enable-agentic-analysis && '- Call `run_advanced_code_analysis` on each modified file.' || '- Review your changes carefully for correctness.' }}
+            ${{ inputs.enable-agentic-analysis && '- If new issues are found, fix them and re-analyze.' || '' }}
+            ${{ inputs.enable-agentic-analysis && '- Maximum 3 fix-verify cycles per file. If issues persist, stop and report them.' || '' }}
+            ${{ inputs.enable-agentic-analysis && '- Only declare a file done when analysis returns zero new fixable issues.' || '' }}
+
+            ### Step 4: COMMIT
+            Once all files are clean, commit with message:
+            "fix: resolve SonarQube issues (automated)"
+
+            Post a summary of:
+            - Issues fixed (rule, file, what you changed)
+            - Issues skipped (rule, file, why)
+            ${{ inputs.enable-agentic-analysis && '- Verification results (pass/fail per file, iterations needed)' || '' }}
+
+            ## Guardrails
+
+            - Fix ONLY the listed issues. No other refactoring.
+            - Do NOT modify test files unless the issue is in a test file.
+            - Do NOT add new dependencies.
+            - Skip ambiguous fixes — false fixes are worse than unfixed issues.
+            - Prefer holistic refactoring over rule-by-rule fixes when multiple
+              issues affect the same method or class.
+
+          claude_args: |
+            --max-turns ${{ fromJSON(needs.scan-and-triage.outputs.issues_json).config.max_turns }}
+            --model ${{ inputs.claude-model }}
+            --mcp-config /tmp/sonar-mcp-config.json
+            --allowedTools "Edit,Replace,View,GlobTool,GrepTool,BatchTool,Bash(git:*),Bash(cat:*),Bash(head:*),Bash(tail:*),mcp__sonarqube__*"
