@@ -165,14 +165,19 @@ The agent's commit must use that subject prefix exactly — the loop guard (desc
 
 ### 2.5 If something doesn't work
 
-| Symptom | Likely cause |
-|---|---|
-| `/sonar-fix` comment posted, no workflow runs | Author wasn't `OWNER`/`MEMBER`/`COLLABORATOR`. Workflow filter rejected the comment silently. |
-| Workflow runs, "Detect Trigger" sets `should_run=false` | The PR is closed/merged, or this is a sonar-bot trigger and QG already passed. Use the slash command instead. |
-| "Scan & Triage" fails fetching issues | `SONAR_TOKEN` missing, scoped to wrong project, or `SONAR_PROJECT_KEY` repo variable is wrong. |
-| MCP container fails to start | Check the "Pull MCP server image" step logs. Confirm the runner has internet access to Docker Hub. |
-| Agent runs but commits nothing | `sonar-fix-config.yml` filtered everything out. Check `auto_fix.severities`, `auto_fix.rules.deny`, `paths.exclude`. |
-| Agent commit doesn't trigger another run | Expected on slash-command path. The next run only fires when the SonarCloud bot edits its comment after re-analysis — see 2.6. |
+The Actions tab is the source of truth — open the failed run, click the failed job, expand the failed step. Symptoms below are listed roughly in the order you'd hit them on a fresh install. The first two are the install-time gotchas that won't show useful output via API, only in the GitHub UI.
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| **No workflow run appears at all** when SonarCloud's bot comments on the PR | Bot login mismatch. The workflow's filter expects `sonarqubecloud[bot]` by default; your Sonar product may use a different login (older `sonarcloud[bot]`, on-prem variant, etc.). | Open a recent PR comment from the Sonar bot and copy the exact author login. Set it as a repo variable `SONAR_BOT_LOGIN` (Settings → Secrets and variables → Actions → Variables) — both the job filter and the env read from it. |
+| **Workflow run appears, completes in ~1 second with `startup_failure` and zero jobs.** No log archive, no useful API output. | Caller is missing the `permissions:` block. The reusable workflow needs `contents: write` etc. to push the fix commit, but the calling repo's default token is read-only. The UI shows the actual error: *"is requesting 'contents: write' but is only allowed 'contents: read'"*. | Confirm your caller (`.github/workflows/sonar-fix.yml`) has the `permissions:` block at the workflow level — the current `examples/caller-comment-triggered.yml` does. If you copied an older version, re-pull from this repo. |
+| **`/sonar-fix` comment posted, no workflow runs** | Commenter's `author_association` isn't `OWNER`/`MEMBER`/`COLLABORATOR`. The workflow filter silently rejects to prevent drive-by commenters from running billable agent jobs on public repos. | Have someone with write access to the repo post the comment. |
+| Workflow runs, "Detect Trigger" sets `should_run=false` | The PR is closed/merged, or this is a sonar-bot trigger and QG already passed. | If you intend to re-fix on a passing QG, use `/sonar-fix` — it bypasses the QG check. |
+| "Scan & Triage" fails fetching issues | `SONAR_TOKEN` missing, scoped to the wrong project, or `SONAR_PROJECT_KEY` repo variable wrong. | Confirm the existing build workflow (if any) can authenticate to SonarCloud — same token. Cross-check `vars.SONAR_PROJECT_KEY` against the project key in `sonar.projectKey` in your build config. |
+| "Run Claude Code" step fails with an Anthropic auth error | Using a proxy and the gateway secrets are wrong. | Re-check Phase 1.4: `ANTHROPIC_BASE_URL` (variable) and `ANTHROPIC_CUSTOM_HEADERS` (secret) must both be set, and the header value must match what your gateway expects. For direct Anthropic, `ANTHROPIC_API_KEY` must be a real key. |
+| MCP container fails to start | Docker pull failed, or the runner has restricted network. | Check the "Pull MCP server image" step logs. Confirm the runner has internet access to Docker Hub (`mcp/sonarqube`). |
+| Agent runs but commits nothing | `sonar-fix-config.yml` filtered everything out, or no consumer config and the central default is too restrictive for your repo's issues. | Inspect the triage step output — `has_auto_fix` should be `true`. If `false`, loosen `auto_fix.severities` or add specific rules to `auto_fix.rules.allow`. |
+| Agent commit doesn't trigger another run | Expected on the slash-command path. The next run only fires when SonarCloud's bot edits its comment after re-analysis — see 2.6. | Wait for SonarCloud to re-scan and update its comment, or comment `/sonar-fix` again to manually re-trigger. |
 
 ### 2.6 Automatic mode (already running)
 
