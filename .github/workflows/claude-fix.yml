@@ -76,13 +76,37 @@ on:
         required: false
         type: boolean
         default: false
+      anthropic-base-url:
+        description: >
+          Custom Anthropic-compatible endpoint URL. Set this when routing
+          Claude Code through an API gateway (Portkey, Helicone, internal
+          proxy, etc.). Leave empty to call Anthropic directly. Pass via a
+          `vars.ANTHROPIC_BASE_URL` repo variable in the caller workflow.
+        required: false
+        type: string
+        default: ""
     secrets:
       SONAR_TOKEN:
         description: "SonarQube user token"
         required: true
       ANTHROPIC_API_KEY:
-        description: "Anthropic API key"
+        description: >
+          Anthropic API key. Required even when proxying — the underlying
+          claude-code-action requires a non-empty value. Set to "dummy" when
+          using a proxy and rely on ANTHROPIC_AUTH_TOKEN below for actual auth.
         required: true
+      ANTHROPIC_AUTH_TOKEN:
+        description: >
+          Optional. Auth token sent to the Anthropic-compatible endpoint when
+          proxying. With Portkey this is typically the literal "dummy"; with
+          other gateways it may be a real bearer token.
+        required: false
+      ANTHROPIC_CUSTOM_HEADERS:
+        description: >
+          Optional. Extra HTTP headers for the Anthropic-compatible endpoint,
+          one per line. Typically holds the gateway's API key, e.g.
+          "x-portkey-api-key: pk_xxxxx".
+        required: false
 
 permissions:
   contents: write
@@ -345,6 +369,22 @@ jobs:
 
       - name: Pull MCP server image
         run: docker pull mcp/sonarqube
+
+      # Optional API-gateway support (Portkey, Helicone, internal proxy, etc.).
+      # When the caller passes anthropic-base-url and the optional auth/headers
+      # secrets, export them to GITHUB_ENV so the next step's claude-code-action
+      # inherits them and the Anthropic SDK routes through the proxy. Each var
+      # is exported only if non-empty — direct-Anthropic users see no change.
+      - name: Configure Anthropic endpoint (proxy support)
+        env:
+          BASE_URL: ${{ inputs.anthropic-base-url }}
+          AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS }}
+        run: |
+          [ -n "$BASE_URL" ]       && echo "ANTHROPIC_BASE_URL=$BASE_URL"             >> "$GITHUB_ENV"
+          [ -n "$AUTH_TOKEN" ]     && echo "ANTHROPIC_AUTH_TOKEN=$AUTH_TOKEN"         >> "$GITHUB_ENV"
+          [ -n "$CUSTOM_HEADERS" ] && echo "ANTHROPIC_CUSTOM_HEADERS=$CUSTOM_HEADERS" >> "$GITHUB_ENV"
+          : # always exit 0 even when all three are empty
 
       - name: Run Claude Code to fix issues
         uses: anthropics/claude-code-action@v1

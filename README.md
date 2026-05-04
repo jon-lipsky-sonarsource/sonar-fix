@@ -69,6 +69,20 @@ Same screen → **Variables** tab → **New organization variable**:
 | `SONAR_HOST_URL`    | e.g. `https://sonarcloud.io`            |
 | `SONAR_ORG`         | SonarQube Cloud org key (if applicable) |
 
+### 1.4 (Optional) Route Claude through an API gateway
+
+If your org accesses Claude via Portkey, Helicone, or an internal proxy instead of calling `api.anthropic.com` directly, add the gateway settings as a variable + two secrets:
+
+| Name | Type | Example |
+|---|---|---|
+| `ANTHROPIC_BASE_URL` | variable | `https://api.portkey.ai` |
+| `ANTHROPIC_AUTH_TOKEN` | secret | `dummy` for Portkey; whatever the gateway expects |
+| `ANTHROPIC_CUSTOM_HEADERS` | secret | `x-portkey-api-key: pk_xxxxx` (one header per line for multiple) |
+
+`ANTHROPIC_API_KEY` is still required (`claude-code-action` won't run without it) but the SDK ignores it once `ANTHROPIC_AUTH_TOKEN` is set — set it to `dummy`.
+
+The reusable workflow exports these to the Claude step's environment only when set, so direct-Anthropic users can ignore this section.
+
 ### Verifying Phase 1
 
 Org admins should see the new repo, the secrets, and the variables in their respective settings pages. Nothing runs yet.
@@ -209,10 +223,11 @@ Claude Code runs in the GitHub Actions runner with the SonarQube MCP server as a
 | `claude-model`      | No       | `claude-sonnet-4-6`              | Claude model to use            |
 | `run-sonar-scan`    | No       | `true`                           | Set `false` if scan runs elsewhere |
 | `enable-agentic-analysis` | No | `false`                          | Enables `run_advanced_code_analysis` and the full MCP toolset. Requires SonarQube Cloud Team or Enterprise. The example caller turns this on. |
+| `anthropic-base-url` | No      | `""`                             | Custom Anthropic-compatible endpoint URL (Portkey, Helicone, internal proxy). Empty = call Anthropic directly. See 1.4. |
 | `pr-number`         | Yes      | —                                | PR number (caller resolves)    |
 | `pr-branch`         | Yes      | —                                | PR head branch (caller resolves) |
 
-**Secrets:** `SONAR_TOKEN`, `ANTHROPIC_API_KEY`
+**Secrets:** `SONAR_TOKEN`, `ANTHROPIC_API_KEY` (required); `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_CUSTOM_HEADERS` (optional, only when `anthropic-base-url` is set)
 
 #### `copilot-fix.yml`
 

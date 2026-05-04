@@ -234,6 +234,9 @@ jobs:
       pr-branch: ${{ needs.detect-and-resolve.outputs.pr_branch }}
       enable-agentic-analysis: true
       run-sonar-scan: false   # Analysis already ran — SonarCloud told us so!
+      # Optional: route Claude through an API gateway (Portkey, Helicone, etc.)
+      # by setting a `vars.ANTHROPIC_BASE_URL` repo variable. Empty = direct.
+      anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}
       # config-path: ".github/sonar-fix-config.yml"
       # claude-model: "claude-sonnet-4-6"
     secrets: inherit

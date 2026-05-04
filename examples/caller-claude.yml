@@ -32,4 +32,7 @@ jobs:
       pr-branch: ${{ github.head_ref }}
       enable-agentic-analysis: true
       run-sonar-scan: true     # Run the scan ourselves (not waiting for SonarCloud)
+      # Optional: route Claude through an API gateway (Portkey, Helicone, etc.)
+      # by setting a `vars.ANTHROPIC_BASE_URL` repo variable. Empty = direct.
+      anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}
     secrets: inherit
