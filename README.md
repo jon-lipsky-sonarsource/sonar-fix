@@ -60,7 +60,7 @@ your-repo/
 │   ├── workflows/
 │   │   └── sonar-autofix.yml          ← from examples/caller-path2-claude.yml
 │   └── sonar-autofix-config.yml       ← from examples/sonar-autofix-config.yml
-└── CLAUDE.md                          ← from examples/CLAUDE.md (Path 2 only)
+└── AGENTS.md                          ← from examples/AGENTS.md (cross-agent)
 ```
 
 Edit `sonar-autofix.yml` to replace `my-org` with your actual org name.

@@ -1,4 +1,9 @@
-# CLAUDE.md — SonarQube Auto-Fix Agent Instructions
+# AGENTS.md — SonarQube Auto-Fix Agent Instructions
+
+These instructions are intentionally agent-agnostic — they apply to any
+coding agent the auto-fix workflow dispatches to (Claude Code today,
+GitHub Copilot's coding agent in the Path 3 flow, and any future tool
+that reads `AGENTS.md` from the repo root).
 
 ## Role
 
@@ -17,20 +22,33 @@ specific SonarQube issues identified in pull requests.
    - `"Exception/Error Handling"`
    Add `"Type System & Generics"` for utility methods with overloads.
 
-2. If modifying existing classes, call `get_current_architecture` (depth=1)
-   to understand package structure and dependency relationships.
+2. To locate the code you'll be editing, prefer the SonarQube index over
+   filesystem search:
+   - `search_by_signature_patterns` — find methods/classes by signature
+   - `search_by_body_patterns` — find code by content patterns
+   - `get_source_code` — read the implementation once located
 
-3. If changing method signatures or public APIs, call `get_references` to
-   understand which other classes use the code you're changing.
+   Fall back to Read/Grep only when the index doesn't surface the target.
 
-4. Use the returned context to inform your fixes — avoid patterns that the
+3. If modifying existing classes, call `get_current_architecture` (depth=1)
+   to understand package structure and dependency relationships. Pair with
+   `get_intended_architecture` when the fix touches layering or boundaries.
+
+4. If changing method signatures, public APIs, or call sites, run impact
+   analysis before editing:
+   - `get_references` — every usage of the symbol
+   - `get_upstream_call_flow` / `get_downstream_call_flow` — trace callers
+     and callees
+   - `get_type_hierarchy` — inheritance and interface implementers
+
+5. Use the returned context to inform your fixes — avoid patterns that the
    guidelines flag, and follow existing architectural conventions.
 
 ### FIX — Apply Targeted Changes
 
-1. For each issue, look up the full rule description using the MCP server.
-   Read the compliant and non-compliant examples — they make the fix
-   pattern clear.
+1. For each issue, call `show_rule` with the rule key (e.g. `java:S1874`)
+   to get the full description. Read the compliant and non-compliant
+   examples — they make the fix pattern clear.
 
 2. Read the affected file and understand the surrounding context.
 
@@ -47,7 +65,10 @@ specific SonarQube issues identified in pull requests.
 ### VERIFY — After Every File Modification
 
 1. You MUST call `run_advanced_code_analysis` on each modified file after
-   applying fixes.
+   applying fixes. Pass:
+   - `filePath` — project-relative path (e.g. `src/main/java/com/x/Foo.java`)
+   - `branchName` — the PR branch (provided by the workflow)
+   - `fileScope` — `["MAIN"]` for production code, `["TEST"]` for tests
 
 2. If new issues are found in your code, fix them and re-analyze.
 
@@ -65,10 +86,12 @@ specific SonarQube issues identified in pull requests.
 
 ### COMMIT
 
-After all files pass verification, commit with a clear message:
+After all files pass verification, commit with a clear message. The
+subject line MUST start with `fix: resolve SonarQube issues` — the
+comment-triggered caller workflow counts these to enforce its loop guard.
 
 ```
-fix: resolve N SonarQube issues (automated)
+fix: resolve SonarQube issues (automated)
 
 Fixes:
 - java:S1481 in src/main/Foo.java:42 — removed unused variable

@@ -331,16 +331,26 @@ jobs:
               the issues (e.g. "Code Complexity & Maintainability",
               "Naming Conventions & Code Style", "Exception/Error Handling",
               "Type System & Generics") and the primary language of the files.
+            - To locate code, prefer the SonarQube index over filesystem search:
+              `search_by_signature_patterns` (find by method/class signature),
+              `search_by_body_patterns` (find by code content), then
+              `get_source_code` to read the implementation. Fall back to Read/Grep
+              only when the index doesn't surface the target.
             - If modifying existing classes, call `get_current_architecture` to
-              understand package structure and `get_type_hierarchy` or
-              `get_references` to understand usage patterns.
+              understand package structure; pair with `get_intended_architecture`
+              when the fix touches layering or boundaries.
+            - If changing method signatures, public APIs, or call sites, run impact
+              analysis: `get_references` (every usage), `get_upstream_call_flow`
+              and `get_downstream_call_flow` (callers/callees), `get_type_hierarchy`
+              (inheritance and implementers).
             - Use this context to inform your fixes — avoid patterns the guidelines
               flag, and follow existing architectural conventions.
 
             ### Step 2: FIX (Generate)
             For each issue:
-            1. Look up the full rule description using `get_rule_details` or
-               `search_sonar_rules`. Read the compliant/non-compliant examples.
+            1. Call `show_rule` with the rule key (e.g. `java:S1874`) to get
+               the full description. Read the compliant/non-compliant examples
+               — they make the fix pattern clear.
             2. Read the affected file and understand the surrounding context.
             3. Apply a minimal, targeted fix that resolves the issue while
                maintaining the code's existing behavior.
@@ -351,7 +361,7 @@ jobs:
 
             ### Step 3: VERIFY (Agentic Analysis)
             After fixing all issues in a file:
-            ${{ inputs.enable-agentic-analysis && '- Call `run_advanced_code_analysis` on each modified file.' || '- Review your changes carefully for correctness.' }}
+            ${{ inputs.enable-agentic-analysis && format('- Call `run_advanced_code_analysis` on each modified file. Pass `filePath` (project-relative, e.g. `src/main/java/com/x/Foo.java`), `branchName: "{0}"`, and `fileScope: ["MAIN"]` for production code or `["TEST"]` for tests.', inputs.pr-branch) || '- Review your changes carefully for correctness.' }}
             ${{ inputs.enable-agentic-analysis && '- If new issues are found, fix them and re-analyze.' || '' }}
             ${{ inputs.enable-agentic-analysis && '- Maximum 3 fix-verify cycles per file. If issues persist, stop and report them.' || '' }}
             ${{ inputs.enable-agentic-analysis && '- Only declare a file done when analysis returns zero new fixable issues.' || '' }}

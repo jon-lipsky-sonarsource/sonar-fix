@@ -39,7 +39,7 @@ examples/
   caller-path3-copilot.yml      # Caller: fires on PR open/push (Copilot)
   sonar-autofix-config.yml      # Per-repo config controlling what gets auto-fixed
   copilot-mcp-setup.json        # MCP config for Copilot coding agent settings
-  CLAUDE.md                     # Agent instructions for Claude Code during fix runs
+  AGENTS.md                     # Agent instructions (cross-agent) used during fix runs
 ```
 
 ## Key Design Decisions
@@ -112,7 +112,7 @@ and verify the categorization logic in isolation.
 4. Add to the test repo:
    - `.github/workflows/sonar-autofix.yml` (from `examples/caller-comment-triggered.yml`)
    - `.github/sonar-autofix-config.yml` (from `examples/sonar-autofix-config.yml`)
-   - `CLAUDE.md` (from `examples/CLAUDE.md`)
+   - `AGENTS.md` (from `examples/AGENTS.md`)
 5. Set org-level secrets: `SONAR_TOKEN`, `ANTHROPIC_API_KEY`
 6. Set repo variable: `SONAR_PROJECT_KEY`
 7. Open a PR that introduces code with known SonarQube issues
