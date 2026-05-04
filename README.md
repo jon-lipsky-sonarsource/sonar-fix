@@ -57,8 +57,9 @@ Then go to **Settings → Actions → General** on the new repo and set "Access"
 | Secret              | Required By | Description                                |
 |---------------------|-------------|--------------------------------------------|
 | `SONAR_TOKEN`       | Both        | SonarQube user token                       |
-| `ANTHROPIC_API_KEY` | Claude      | Anthropic API key. Skip if you only ever route through a virtual-key gateway like Portkey (see 1.4) — the workflow uses a placeholder. Set to your real key for direct Anthropic or for Helicone-style observability proxies that forward to Anthropic. |
+| `ANTHROPIC_API_KEY` | Claude      | Anthropic API key. Skip if you only ever route through a virtual-key gateway like Portkey (see 1.5) — the workflow uses a placeholder. Set to your real key for direct Anthropic or for Helicone-style observability proxies that forward to Anthropic. |
 | `COPILOT_PAT`       | Copilot     | GitHub PAT (classic, `repo` scope) from a Copilot subscriber |
+| `AGENT_PUSH_TOKEN`  | Both (for loop) | GitHub PAT used to push the agent's commits. **Required for the auto-fix loop to keep iterating.** Pushes via PAT trigger your build/Sonar workflow on the new commit, which posts a fresh SonarCloud bot comment, which re-fires sonar-fix.yml. Without this secret, pushes use the default `GITHUB_TOKEN` — the commit lands on the PR but downstream workflows don't auto-run (GHA's recursive-trigger protection), so the loop stalls after one fix unless someone re-comments `/sonar-fix`. Classic PAT with `repo` scope, or fine-grained PAT with `Contents: write` + `Pull requests: write`. |
 
 ### 1.3 Add org-level variables
 

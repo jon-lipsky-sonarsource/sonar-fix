@@ -113,6 +113,20 @@ on:
           one per line. Typically holds the gateway's API key, e.g.
           "x-portkey-api-key: pk_xxxxx".
         required: false
+      AGENT_PUSH_TOKEN:
+        description: >
+          Optional PAT (or GitHub App installation token) used to push the
+          agent's commits. Required for the auto-fix loop to continue
+          iterating: pushes made via this token fire `pull_request:
+          synchronize` events that re-run the consumer's build/Sonar
+          workflow, producing a new SonarCloud bot comment that re-fires
+          sonar-fix.yml. When unset, the workflow falls back to GITHUB_TOKEN
+          — pushes succeed but downstream workflows don't auto-trigger
+          (per GHA's recursive-trigger protection), so the loop stalls
+          after one fix unless the human re-comments /sonar-fix. Set to a
+          PAT with `repo` scope (classic) or the equivalent fine-grained
+          scopes (Contents: write, Pull requests: write).
+        required: false
 
 permissions:
   contents: write
@@ -511,10 +525,19 @@ jobs:
       - name: Push agent commits
         env:
           PR_BRANCH: ${{ inputs.pr-branch }}
-          GH_TOKEN: ${{ github.token }}
+          PUSH_PAT: ${{ secrets.AGENT_PUSH_TOKEN }}
+          DEFAULT_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git"
+          if [ -n "$PUSH_PAT" ]; then
+            echo "Using AGENT_PUSH_TOKEN — pushes will trigger downstream workflows, so the auto-fix loop will continue iterating until QG passes or the loop guard trips."
+            TOKEN="$PUSH_PAT"
+          else
+            echo "::warning::AGENT_PUSH_TOKEN not set. Falling back to GITHUB_TOKEN. Pushes will succeed but won't trigger downstream workflows (per GHA's recursive-trigger protection), so the auto-fix loop stalls after one fix unless someone re-comments /sonar-fix. To get full loop behaviour, add a PAT secret AGENT_PUSH_TOKEN — see README Phase 1."
+            TOKEN="$DEFAULT_TOKEN"
+          fi
+
+          git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${GH_REPO}.git"
           git fetch origin "$PR_BRANCH" --quiet
           NEW_COMMITS=$(git rev-list --count "origin/$PR_BRANCH..HEAD" 2>/dev/null || echo 0)
           if [ "$NEW_COMMITS" = "0" ]; then
@@ -524,13 +547,3 @@ jobs:
           echo "Pushing $NEW_COMMITS commit(s) to origin/$PR_BRANCH:"
           git log --oneline "origin/$PR_BRANCH..HEAD"
           git push origin "HEAD:refs/heads/$PR_BRANCH"
-          # Note: pushes made with GITHUB_TOKEN don't trigger downstream
-          # workflows in the calling repo (per GitHub's recursive-trigger
-          # protection). That means the consumer's build.yml won't auto-run
-          # on this push, and a CI-driven SonarCloud scan won't re-trigger
-          # on its own. The loop still works whenever SonarCloud reanalyzes
-          # via webhook (its own integration) or via "automatic analysis"
-          # mode. For consumers whose Sonar scan is gated on build.yml, the
-          # next iteration of the loop won't fire automatically — they can
-          # comment /sonar-fix to retrigger manually, or set up a PAT to
-          # bypass the recursive-trigger protection.
