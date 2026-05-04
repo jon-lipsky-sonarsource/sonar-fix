@@ -1,5 +1,5 @@
 # =============================================================================
-# Reusable Workflow: SonarQube + Claude Code Fix (Path 2)
+# Reusable Workflow: SonarQube + Claude Code Fix
 # =============================================================================
 # Central org-wide workflow. Individual repos call this with minimal config.
 #
@@ -14,7 +14,7 @@
 # Called from a repo like:
 #   jobs:
 #     sonar-fix:
-#       uses: my-org/sonar-fix/.github/workflows/path2-claude-fix.yml@v1
+#       uses: my-org/sonar-fix/.github/workflows/claude-fix.yml@v1
 #       with:
 #         sonar-project-key: my-org_my-repo
 #         pr-number: 42

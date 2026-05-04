@@ -2,7 +2,7 @@
 
 These instructions are intentionally agent-agnostic — they apply to any
 coding agent the fix workflow dispatches to (Claude Code today,
-GitHub Copilot's coding agent in the Path 3 flow, and any future tool
+GitHub Copilot's coding agent via the Copilot workflow, and any future tool
 that reads `AGENTS.md` from the repo root).
 
 ## Role

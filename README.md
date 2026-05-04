@@ -15,8 +15,8 @@ When a PR is opened, these workflows:
 Calling Repo                          Central Repo (this repo)
 ┌─────────────────────┐               ┌──────────────────────────┐
 │ .github/workflows/  │               │ .github/workflows/       │
-│   sonar-fix.yml     │──── calls ───▶│   path2-claude-fix.yml   │
-│                     │               │   path3-copilot-fix.yml  │
+│   sonar-fix.yml     │──── calls ───▶│   claude-fix.yml         │
+│                     │               │   copilot-fix.yml        │
 │ .github/            │               │                          │
 │   sonar-fix-        │               │ triage-action/           │
 │     config.yml      │               │   action.yml             │
@@ -39,9 +39,9 @@ Go to **Organization Settings > Secrets and variables > Actions** and create:
 
 | Secret              | Required By | Description                                |
 |---------------------|-------------|--------------------------------------------|
-| `SONAR_TOKEN`       | Both paths  | SonarQube user token                       |
-| `ANTHROPIC_API_KEY` | Path 2      | Anthropic API key for Claude Code          |
-| `COPILOT_PAT`       | Path 3      | GitHub PAT (classic, `repo` scope) from a Copilot subscriber |
+| `SONAR_TOKEN`       | Both        | SonarQube user token                       |
+| `ANTHROPIC_API_KEY` | Claude      | Anthropic API key for Claude Code          |
+| `COPILOT_PAT`       | Copilot     | GitHub PAT (classic, `repo` scope) from a Copilot subscriber |
 
 Also create org-level **variables**:
 
@@ -58,7 +58,7 @@ Copy these files from `examples/` into your test repo:
 your-repo/
 ├── .github/
 │   ├── workflows/
-│   │   └── sonar-fix.yml          ← from examples/caller-path2-claude.yml
+│   │   └── sonar-fix.yml          ← from examples/caller-claude.yml
 │   └── sonar-fix-config.yml       ← from examples/sonar-fix-config.yml
 └── AGENTS.md                          ← from examples/AGENTS.md (cross-agent)
 ```
@@ -82,9 +82,9 @@ Once you're happy with the results:
 
 ## Available Workflows
 
-### Path 2: Claude Code Action
+### Claude Code
 
-**File:** `.github/workflows/path2-claude-fix.yml`
+**File:** `.github/workflows/claude-fix.yml`
 
 Claude Code runs directly in the GitHub Actions runner with the SonarQube MCP server as a Docker sidecar. It reads files, queries SonarQube for rule details, applies fixes, and pushes commits.
 
@@ -101,9 +101,9 @@ Claude Code runs directly in the GitHub Actions runner with the SonarQube MCP se
 
 **Secrets:** `SONAR_TOKEN`, `ANTHROPIC_API_KEY`
 
-### Path 3: Copilot Coding Agent
+### Copilot Coding Agent
 
-**File:** `.github/workflows/path3-copilot-fix.yml`
+**File:** `.github/workflows/copilot-fix.yml`
 
 Posts an `@copilot` comment on the PR with the triaged issues. Copilot picks it up and pushes fixes.
 
@@ -157,13 +157,13 @@ See `examples/sonar-fix-config.yml` for a fully annotated starter config.
                   └──────┬───────────────┬──────────┘
                          │               │
           ┌──────────────▼───┐   ┌───────▼──────────────┐
-          │ Job 2: Review    │   │ Job 3: Fix      │
+          │ Job 2: Review    │   │ Job 3: Fix           │
           │ Comments         │   │                      │
-          │ (PR comment with │   │ Path 2: Claude Code  │
+          │ (PR comment with │   │ Claude Code          │
           │  human-review    │   │   runs in-runner     │
           │  issues)         │   │   with MCP sidecar   │
           │                  │   │                      │
-          │                  │   │ Path 3: @copilot     │
+          │                  │   │ @copilot             │
           │                  │   │   comment triggers   │
           │                  │   │   coding agent       │
           └──────────────────┘   └──────────────────────┘
@@ -174,7 +174,7 @@ See `examples/sonar-fix-config.yml` for a fully annotated starter config.
 Tag releases on this repo (`v1`, `v1.1`, etc.). Consuming repos reference a tag:
 
 ```yaml
-uses: my-org/sonar-fix/.github/workflows/path2-claude-fix.yml@v1
+uses: my-org/sonar-fix/.github/workflows/claude-fix.yml@v1
 ```
 
 Use `@main` during development, pin to tags for production.
@@ -184,7 +184,7 @@ Use `@main` during development, pin to tags for production.
 Set `run-sonar-scan: false` in the caller workflow. The triage job will skip the scan step and just fetch existing issues from SonarQube.
 
 ```yaml
-uses: my-org/sonar-fix/.github/workflows/path2-claude-fix.yml@v1
+uses: my-org/sonar-fix/.github/workflows/claude-fix.yml@v1
 with:
   sonar-project-key: ${{ vars.SONAR_PROJECT_KEY }}
   run-sonar-scan: false

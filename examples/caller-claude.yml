@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   sonar-fix:
-    uses: my-org/sonar-fix/.github/workflows/path2-claude-fix.yml@v1
+    uses: my-org/sonar-fix/.github/workflows/claude-fix.yml@v1
     with:
       sonar-project-key: ${{ vars.SONAR_PROJECT_KEY }}
       sonar-org: ${{ vars.SONAR_ORG }}

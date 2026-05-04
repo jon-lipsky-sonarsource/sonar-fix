@@ -5,7 +5,7 @@
 # Required variables: SONAR_PROJECT_KEY
 #
 # The comment-triggered variant (caller-comment-triggered.yml) also works
-# with Path 3 — just change the reusable workflow reference.
+# with the Copilot workflow — just change the reusable workflow reference.
 # =============================================================================
 
 name: "SonarQube Fix (Copilot)"
@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   sonar-fix:
-    uses: my-org/sonar-fix/.github/workflows/path3-copilot-fix.yml@v1
+    uses: my-org/sonar-fix/.github/workflows/copilot-fix.yml@v1
     with:
       sonar-project-key: ${{ vars.SONAR_PROJECT_KEY }}
       pr-number: ${{ github.event.pull_request.number }}

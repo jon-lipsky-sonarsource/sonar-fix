@@ -1,5 +1,5 @@
 # =============================================================================
-# Reusable Workflow: SonarQube + Copilot Coding Agent Fix (Path 3)
+# Reusable Workflow: SonarQube + Copilot Coding Agent Fix
 # =============================================================================
 # Central org-wide workflow. Individual repos call this with minimal config.
 #
@@ -12,7 +12,7 @@
 # Called from a repo like:
 #   jobs:
 #     sonar-fix:
-#       uses: my-org/sonar-fix/.github/workflows/path3-copilot-fix.yml@v1
+#       uses: my-org/sonar-fix/.github/workflows/copilot-fix.yml@v1
 #       with:
 #         sonar-project-key: my-org_my-repo
 #       secrets: inherit

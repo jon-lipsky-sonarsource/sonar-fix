@@ -26,8 +26,8 @@ The architecture has three layers:
 
 ```
 .github/workflows/
-  path2-claude-fix.yml    # Reusable: scan → triage → Claude Code fix
-  path3-copilot-fix.yml   # Reusable: scan → triage → @copilot comment
+  claude-fix.yml    # Reusable: scan → triage → Claude Code fix
+  copilot-fix.yml   # Reusable: scan → triage → @copilot comment
 
 triage-action/
   action.yml                  # Composite action definition
@@ -35,8 +35,8 @@ triage-action/
 
 examples/
   caller-comment-triggered.yml  # Caller: fires on SonarCloud bot PR comment
-  caller-path2-claude.yml       # Caller: fires on PR open/push (Claude)
-  caller-path3-copilot.yml      # Caller: fires on PR open/push (Copilot)
+  caller-claude.yml       # Caller: fires on PR open/push (Claude)
+  caller-copilot.yml      # Caller: fires on PR open/push (Copilot)
   sonar-fix-config.yml      # Per-repo config controlling what gets fixed
   copilot-mcp-setup.json        # MCP config for Copilot coding agent settings
   AGENTS.md                     # Agent instructions (cross-agent) used during fix runs
@@ -158,7 +158,7 @@ With `enable-agentic-analysis: true`:
 - [ ] The `--allowedTools` list in the Claude Code step may need adjustment
   based on what tools the SonarQube MCP server actually exposes. Verify the
   tool names match.
-- [ ] The Copilot path (Path 3) hasn't been updated with `enable-agentic-analysis`
+- [ ] The Copilot workflow hasn't been updated with `enable-agentic-analysis`
   support. The MCP config in `copilot-mcp-setup.json` should be updated to
   include the agentic analysis env vars.
 - [ ] Add a concurrency group to the comment-triggered caller to prevent
