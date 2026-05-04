@@ -29,6 +29,10 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  # Required by claude-code-action — it fetches an OIDC token to authenticate
+  # to Anthropic's auth backend. Without this, the step fails with "Could
+  # not fetch an OIDC token".
+  id-token: write
 
 jobs:
   sonar-fix:

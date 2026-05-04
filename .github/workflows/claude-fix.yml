@@ -108,6 +108,12 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  # claude-code-action uses OIDC to authenticate to Anthropic's auth backend
+  # (even when proxying — the action requests an OIDC token regardless).
+  # Without this the "Run Claude Code" step fails with:
+  #   "Could not fetch an OIDC token. Did you remember to add `id-token:
+  #    write` to your workflow permissions?"
+  id-token: write
 
 jobs:
   # =========================================================================
