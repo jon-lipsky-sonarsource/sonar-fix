@@ -50,6 +50,18 @@ concurrency:
   group: sonar-fix-pr-${{ github.event.issue.number }}
   cancel-in-progress: true
 
+# The reusable workflow needs to push commits (contents: write) and post
+# review comments on the PR (pull-requests: write, issues: write). When the
+# repo's "Default workflow permissions" is the read-only default, this block
+# is required — without it GitHub rejects the workflow at validation time
+# with "Error calling workflow ... is requesting 'contents: write' but is
+# only allowed 'contents: read'". Granting at the caller level keeps the
+# auth surface explicit and means consumers don't have to flip repo settings.
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
 env:
   # Bot login. Override by setting `SONAR_BOT_LOGIN` as a repo variable
   # (Settings → Secrets and variables → Actions → Variables). The job-level

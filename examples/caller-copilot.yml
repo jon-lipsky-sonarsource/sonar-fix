@@ -18,6 +18,15 @@ concurrency:
   group: sonar-fix-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# Required: the reusable workflow posts an @copilot comment on the PR and
+# the Copilot agent itself pushes commits. Without this block the read-only
+# default token rejects the reusable workflow's permissions request at
+# validation time.
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
 jobs:
   sonar-fix:
     uses: my-org/sonar-fix/.github/workflows/copilot-fix.yml@v1

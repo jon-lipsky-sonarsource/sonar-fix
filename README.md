@@ -118,6 +118,8 @@ your-repo/
 
 In `sonar-fix.yml`, replace `my-org` with your org name.
 
+> **Workflow permissions.** The example caller already declares the `permissions:` block (`contents: write`, `pull-requests: write`, `issues: write`) needed for the agent to push the fix commit and post review comments. You don't need to flip the repo-level "Default workflow permissions" setting — keep that as read-only for everything else and let the caller grant write per-workflow. Without this block, runs fail at validation with `Error calling workflow … is requesting 'contents: write' but is only allowed 'contents: read'`.
+
 > **Optional override:** if you want different rules, severities, or path
 > exclusions than the default, also create `.github/sonar-fix-config.yml`
 > in the consumer repo (copy from `config/default.yml` in this repo as a

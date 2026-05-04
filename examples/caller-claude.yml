@@ -22,6 +22,14 @@ concurrency:
   group: sonar-fix-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# Required: the reusable workflow pushes the agent's fix commit and posts
+# review comments. Without this block the read-only default token rejects
+# the reusable workflow's permissions request at validation time.
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
 jobs:
   sonar-fix:
     uses: my-org/sonar-fix/.github/workflows/claude-fix.yml@v1
