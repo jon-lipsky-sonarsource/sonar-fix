@@ -1,10 +1,15 @@
 # =============================================================================
-# SonarQube Fix Configuration
+# SonarQube Fix Configuration — central default
 # =============================================================================
-# This file controls which SonarQube issues are automatically fixed by an AI
-# agent vs. which are flagged as PR comments for human review.
+# This is the default config used by every consumer that does NOT ship a
+# `.github/sonar-fix-config.yml` of its own. Override per-repo by creating
+# `.github/sonar-fix-config.yml` in the consuming repo with the same schema;
+# the reusable workflow uses the consumer file when present and falls back
+# here otherwise.
 #
-# Hierarchy: rule-level overrides > path exclusions > severity/type filters
+# Schema:
+#   - Hierarchy: rule-level overrides > path exclusions > severity/type filters
+#   - All sections optional; missing sections inherit from this default file
 # =============================================================================
 
 # ---------------------------------------------------------------------------

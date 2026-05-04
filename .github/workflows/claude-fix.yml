@@ -118,7 +118,8 @@ jobs:
         if: inputs.run-sonar-scan
         run: sleep 15
 
-      # Checkout the central repo to get the composite action
+      # Checkout the central repo to get the composite action AND the
+      # default config (used as a fallback when the consumer doesn't ship one).
       - name: Checkout sonar-fix repo
         uses: actions/checkout@v4
         with:
@@ -127,11 +128,25 @@ jobs:
           # Uses the default GITHUB_TOKEN — works for internal/public repos.
           # For private repos, you may need a PAT.
 
+      # Use the consumer's config if they shipped one; otherwise fall back to
+      # the central default at .sonar-fix-action/config/default.yml. Consumers
+      # only need to ship a config file when they want to override defaults.
+      - name: Resolve config path
+        id: resolve-config
+        run: |
+          if [ -f "${{ inputs.config-path }}" ]; then
+            echo "Using consumer config: ${{ inputs.config-path }}"
+            echo "path=${{ inputs.config-path }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "No consumer config at ${{ inputs.config-path }} — using central default"
+            echo "path=.sonar-fix-action/config/default.yml" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Triage issues
         id: triage
         uses: ./.sonar-fix-action/triage-action
         with:
-          config-path: ${{ inputs.config-path }}
+          config-path: ${{ steps.resolve-config.outputs.path }}
           project-key: ${{ inputs.sonar-project-key }}
           branch: ${{ inputs.pr-branch }}
           pr-number: ${{ inputs.pr-number }}

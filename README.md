@@ -81,17 +81,22 @@ The goal of this phase is to confirm your wiring works end-to-end — secrets re
 
 Until you comment `/sonar-fix`, nothing happens. This makes the pilot easy to debug.
 
-### 2.1 Add two files to your test repo
+### 2.1 Add the caller workflow to your test repo
 
 ```
 your-repo/
-├── .github/
-│   ├── workflows/
-│   │   └── sonar-fix.yml          ← copy from examples/caller-comment-triggered.yml
-│   └── sonar-fix-config.yml       ← copy from examples/sonar-fix-config.yml
+└── .github/
+    └── workflows/
+        └── sonar-fix.yml          ← copy from examples/caller-comment-triggered.yml
 ```
 
 In `sonar-fix.yml`, replace `my-org` with your org name.
+
+> **Optional override:** if you want different rules, severities, or path
+> exclusions than the default, also create `.github/sonar-fix-config.yml`
+> in the consumer repo (copy from `config/default.yml` in this repo as a
+> starting point). Without it, the workflow falls back to the central
+> default — most repos won't need to override.
 
 > **No `AGENTS.md` to copy.** The reusable workflow injects its agent prompt
 > (`prompts/sonar-fix-agent.md` in this repo) into your repo's `AGENTS.md` at
@@ -182,11 +187,11 @@ The workflow uses `concurrency: cancel-in-progress: true` keyed on PR number. If
 Once one repo is humming through both manual and automatic runs:
 
 1. **Tag a release** on the central repo: `git tag v1 && git push --tags`. Have consuming repos pin to the tag so future changes don't break them: `uses: my-org/sonar-fix/.github/workflows/claude-fix.yml@v1`.
-2. **Copy the three files** (`sonar-fix.yml`, `sonar-fix-config.yml`, `AGENTS.md`) to additional repos.
+2. **Copy `sonar-fix.yml`** to each additional repo and edit `my-org` to match your org.
 3. **Add `SONAR_PROJECT_KEY`** as a repo variable in each new repo.
-4. **Customize `sonar-fix-config.yml`** per repo if needed — different rules, severities, path exclusions, max issues per run.
+4. **(Optional) Override the default config** per repo by creating `.github/sonar-fix-config.yml` — only needed when a repo wants different rules, severities, or path exclusions than the central default. Repos without this file fall back to `config/default.yml` from the central repo.
 
-If multiple repos share the same config, you can omit the file per-repo and rely on defaults defined in the reusable workflow.
+The agent prompt and default config both live centrally, so most repos only need step 2 + step 3 — one file and one variable to opt in.
 
 ---
 
@@ -250,7 +255,7 @@ Issues matching ALL filters land in `auto_fix`; everything else is `review_only`
 | `guardrails.max_issues_per_run` | Hard cap on issues sent to the agent — controls cost |
 | `guardrails.max_turns` | Agent iteration cap |
 
-See `examples/sonar-fix-config.yml` for a fully annotated starter config.
+The central default lives at `config/default.yml` in this repo and is annotated. Copy it to `.github/sonar-fix-config.yml` in your consumer repo only when you need to override; the workflow uses the consumer file when present and falls back to the default otherwise.
 
 ### Agent prompt (`prompts/sonar-fix-agent.md`)
 

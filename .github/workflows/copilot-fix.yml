@@ -98,11 +98,24 @@ jobs:
           repository: ${{ github.repository_owner }}/sonar-fix
           path: .sonar-fix-action
 
+      # Use the consumer's config if they shipped one; otherwise fall back to
+      # the central default. Consumers only ship a config to override defaults.
+      - name: Resolve config path
+        id: resolve-config
+        run: |
+          if [ -f "${{ inputs.config-path }}" ]; then
+            echo "Using consumer config: ${{ inputs.config-path }}"
+            echo "path=${{ inputs.config-path }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "No consumer config at ${{ inputs.config-path }} — using central default"
+            echo "path=.sonar-fix-action/config/default.yml" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Triage issues
         id: triage
         uses: ./.sonar-fix-action/triage-action
         with:
-          config-path: ${{ inputs.config-path }}
+          config-path: ${{ steps.resolve-config.outputs.path }}
           project-key: ${{ inputs.sonar-project-key }}
           branch: ${{ inputs.pr-branch }}
           pr-number: ${{ inputs.pr-number }}
