@@ -1,15 +1,8 @@
 # sonar-fix
 
-Org-wide reusable workflows and actions for automatically fixing SonarQube issues on pull requests using AI coding agents.
-
-## Overview
-
-When a PR is opened, these workflows:
-
-1. **Scan** the PR with SonarQube
-2. **Triage** the issues against your repo's fix config (which severities, types, and rules to fix vs. flag)
-3. **Dispatch** eligible issues to an AI agent (Claude Code or GitHub Copilot) for automatic fixing
-4. **Comment** on the PR with issues that need human review
+Org-wide reusable workflows that fix SonarQube issues on pull requests using AI coding agents.
+Works manually on demand (a reviewer comments `/sonar-fix`) and automatically (when SonarCloud's
+quality gate fails, the agent fixes the issues and pushes a commit).
 
 ```
 Calling Repo                          Central Repo (this repo)
@@ -27,15 +20,39 @@ Calling Repo                          Central Repo (this repo)
                                       └──────────────────────────┘
 ```
 
-## Quick Start (Test on one repo first)
+## How it works
 
-### 1. Set up this central repo
+1. **Trigger** — a SonarCloud bot comment (automated) or a `/sonar-fix` comment from a reviewer (manual)
+2. **Triage** — the workflow fetches the PR's SonarQube issues and splits them into "auto-fix" (matched by your config) and "review-only" (flagged for humans)
+3. **Fix** — issues in the auto-fix bucket go to a coding agent (Claude Code or GitHub Copilot) running with the SonarQube MCP server. The agent reads files, looks up rules, applies fixes, verifies via Agentic Analysis, and pushes a commit.
+4. **Loop** — when the agent's fix lands, SonarCloud re-analyzes. If the quality gate still fails, the workflow runs again. A loop guard caps wasted attempts.
 
-Create a repo in your org called `sonar-fix` (or any name). Push the contents of this repository to it. Under **Settings > Actions > General**, set "Access" to allow other repos in the org to use workflows and actions from this repo.
+---
 
-### 2. Set up secrets at the org level
+## Prerequisites
 
-Go to **Organization Settings > Secrets and variables > Actions** and create:
+- A **GitHub organization** where you can create a central repo and grant other repos access to its workflows
+- **SonarCloud** (or SonarQube Cloud / Server) already running on your PRs, with the bot posting summary comments
+- One of:
+  - An **Anthropic API key** (to use Claude Code)
+  - A **GitHub Copilot subscription** + a classic PAT with `repo` scope from a Copilot subscriber
+- A **test repo** with known SonarQube issues you can pilot on
+
+The setup is split into four phases. Each one is verifiable on its own — you don't run the next phase until the previous one is working.
+
+---
+
+## Phase 1 — Install the central repo (one-time, org-wide)
+
+### 1.1 Create the central repo
+
+Fork or copy this repository into your org. The recommended name is `sonar-fix`, but anything works.
+
+Then go to **Settings → Actions → General** on the new repo and set "Access" to allow other repos in the org to use workflows and actions from this repo.
+
+### 1.2 Add org-level secrets
+
+**Organization Settings → Secrets and variables → Actions** → **New organization secret**:
 
 | Secret              | Required By | Description                                |
 |---------------------|-------------|--------------------------------------------|
@@ -43,99 +60,228 @@ Go to **Organization Settings > Secrets and variables > Actions** and create:
 | `ANTHROPIC_API_KEY` | Claude      | Anthropic API key for Claude Code          |
 | `COPILOT_PAT`       | Copilot     | GitHub PAT (classic, `repo` scope) from a Copilot subscriber |
 
-Also create org-level **variables**:
+### 1.3 Add org-level variables
+
+Same screen → **Variables** tab → **New organization variable**:
 
 | Variable            | Description                             |
 |---------------------|-----------------------------------------|
 | `SONAR_HOST_URL`    | e.g. `https://sonarcloud.io`            |
 | `SONAR_ORG`         | SonarQube Cloud org key (if applicable) |
 
-### 3. Add to your test repo
+### Verifying Phase 1
 
-Copy these files from `examples/` into your test repo:
+Org admins should see the new repo, the secrets, and the variables in their respective settings pages. Nothing runs yet.
+
+---
+
+## Phase 2 — Pilot on one repo with `/sonar-fix`
+
+The goal of this phase is to confirm your wiring works end-to-end — secrets resolve, the MCP server starts, the agent has commit permissions — by triggering a fix **manually** on a single PR.
+
+Until you comment `/sonar-fix`, nothing happens. This makes the pilot easy to debug.
+
+### 2.1 Add three files to your test repo
 
 ```
 your-repo/
 ├── .github/
 │   ├── workflows/
-│   │   └── sonar-fix.yml          ← from examples/caller-claude.yml
-│   └── sonar-fix-config.yml       ← from examples/sonar-fix-config.yml
-└── AGENTS.md                          ← from examples/AGENTS.md (cross-agent)
+│   │   └── sonar-fix.yml          ← copy from examples/caller-comment-triggered.yml
+│   └── sonar-fix-config.yml       ← copy from examples/sonar-fix-config.yml
+└── AGENTS.md                      ← copy from examples/AGENTS.md
 ```
 
-Edit `sonar-fix.yml` to replace `my-org` with your actual org name.
+In `sonar-fix.yml`, replace `my-org` with your org name.
 
-Add a **repo-level variable** `SONAR_PROJECT_KEY` with your SonarQube project key.
+> **`AGENTS.md`** is the agent's playbook for fix runs — Guide → Fix → Verify, MCP tool list, commit conventions. Claude Code and GitHub Copilot's coding agent both read it from the repo root. Copy it as-is to start; customize once you have the basic flow working.
 
-### 4. Open a PR and watch it work
+### 2.2 Add the per-repo variable
 
-The workflow will trigger on `pull_request` events. Check the Actions tab to see the scan, triage, and fix jobs.
+In the test repo: **Settings → Secrets and variables → Actions → Variables**:
 
-### 5. Roll out to more repos
+| Variable            | Description                       |
+|---------------------|-----------------------------------|
+| `SONAR_PROJECT_KEY` | Your SonarQube project key        |
 
-Once you're happy with the results:
+### 2.3 Trigger a fix
 
-- Tag this repo (`git tag v1 && git push --tags`) so consuming repos pin to a stable version
-- Copy the caller workflow and config to additional repos
-- Customize `sonar-fix-config.yml` per-repo as needed (different rules, severities, etc.)
-- Or keep the config identical across repos by not including it and relying on defaults
+1. Pick (or open) a PR on the test repo that has known SonarQube issues
+2. Comment **`/sonar-fix`** on the PR
 
-## Available Workflows
+The slash command is gated by `author_association` — only `OWNER`, `MEMBER`, or `COLLABORATOR` can trigger it. This prevents drive-by commenters from running billable agent jobs on public repos.
 
-### Claude Code
+### 2.4 What success looks like
 
-**File:** `.github/workflows/claude-fix.yml`
+In the **Actions** tab of the test repo you should see:
 
-Claude Code runs directly in the GitHub Actions runner with the SonarQube MCP server as a Docker sidecar. It reads files, queries SonarQube for rule details, applies fixes, and pushes commits.
+- A workflow run titled **"SonarQube Fix (Comment Triggered)"**
+- **Detect Trigger & Resolve PR** — completes, output `trigger=slash-command`
+- **Fix / Scan & Triage** — fetches issues from SonarQube, splits them into auto-fix and review-only
+- **Fix / Post Review Comments** — posts a PR comment listing the review-only issues
+- **Fix / Claude Fix** — pulls the SonarQube MCP Docker image, runs the agent, pushes a commit
+- A new commit on the PR with subject **`fix: resolve SonarQube issues (automated)`**
 
-**Inputs:**
+The agent's commit must use that subject prefix exactly — the loop guard counts these to enforce its attempt cap (next phase).
 
-| Input               | Required | Default                  | Description                    |
-|---------------------|----------|--------------------------|--------------------------------|
-| `sonar-project-key` | Yes      | —                        | SonarQube project key          |
-| `sonar-org`         | No       | `""`                     | SonarQube Cloud org key        |
-| `config-path`       | No       | `.github/sonar-fix-config.yml` | Path to fix config |
-| `sonar-host-url`    | No       | `https://sonarcloud.io`  | SonarQube host URL             |
-| `claude-model`      | No       | `claude-sonnet-4-6`      | Claude model to use            |
-| `run-sonar-scan`    | No       | `true`                   | Set `false` if scan runs elsewhere |
+### 2.5 If something doesn't work
+
+| Symptom | Likely cause |
+|---|---|
+| `/sonar-fix` comment posted, no workflow runs | Author wasn't `OWNER`/`MEMBER`/`COLLABORATOR`. Workflow filter rejected the comment silently. |
+| Workflow runs, "Detect Trigger" sets `should_run=false` | The PR is closed/merged, or this is a sonar-bot trigger and QG already passed. Use the slash command instead. |
+| "Scan & Triage" fails fetching issues | `SONAR_TOKEN` missing, scoped to wrong project, or `SONAR_PROJECT_KEY` repo variable is wrong. |
+| MCP container fails to start | Check the "Pull MCP server image" step logs. Confirm the runner has internet access to Docker Hub. |
+| Agent runs but commits nothing | `sonar-fix-config.yml` filtered everything out. Check `auto_fix.severities`, `auto_fix.rules.deny`, `paths.exclude`. |
+| Agent commit doesn't trigger another run | Expected on slash-command path. The next run only fires when the SonarCloud bot edits its comment after re-analysis (Phase 3). |
+
+---
+
+## Phase 3 — Turn on automatic mode
+
+There is no new file to add. The same `sonar-fix.yml` you installed in Phase 2 already listens for the **SonarCloud bot's** quality gate summary comment in addition to `/sonar-fix`. Once you've confirmed the manual flow works, the automatic flow is on by default.
+
+### How the loop runs
+
+1. SonarCloud finishes analyzing the PR and posts (or edits) its summary comment
+2. The workflow filter matches the bot's comment containing "Quality Gate"
+3. If QG **passed** → workflow exits, no fix run (loop terminates)
+4. If QG **failed** → triage + agent + commit, same as Phase 2
+5. SonarCloud re-analyzes the agent's commit and edits its summary comment
+6. Step 2 repeats — until QG passes, or the loop guard trips
+
+### Loop guard
+
+The workflow counts prior commits on the PR whose subject starts with `fix: resolve SonarQube issues`. If that count exceeds `MAX_FIX_ATTEMPTS` (default **3**), bot-triggered runs are skipped. A reviewer commenting `/sonar-fix` always bypasses the cap and forces another attempt.
+
+Knobs at the top of `sonar-fix.yml`:
+
+```yaml
+env:
+  SONAR_BOT_LOGIN: "sonarcloud[bot]"          # Bot username for your Sonar product
+  MAX_FIX_ATTEMPTS: "3"                        # Loop guard
+  FIX_COMMIT_PREFIX: "fix: resolve SonarQube issues"
+```
+
+> **Bot username by product:** SonarCloud (`sonarcloud.io`) → `sonarcloud[bot]`. SonarQube Cloud (`sonarqube.com`) → `SonarQubeCloud[bot]`. Check a recent PR comment to confirm.
+
+### Concurrency
+
+The workflow uses `concurrency: cancel-in-progress: true` keyed on PR number. If a new comment arrives while a previous run is going, the previous run is cancelled — newer Sonar state always wins.
+
+---
+
+## Phase 4 — Roll out to more repos
+
+Once one repo is humming through both manual and automatic runs:
+
+1. **Tag a release** on the central repo: `git tag v1 && git push --tags`. Have consuming repos pin to the tag so future changes don't break them: `uses: my-org/sonar-fix/.github/workflows/claude-fix.yml@v1`.
+2. **Copy the three files** (`sonar-fix.yml`, `sonar-fix-config.yml`, `AGENTS.md`) to additional repos.
+3. **Add `SONAR_PROJECT_KEY`** as a repo variable in each new repo.
+4. **Customize `sonar-fix-config.yml`** per repo if needed — different rules, severities, path exclusions, max issues per run.
+
+If multiple repos share the same config, you can omit the file per-repo and rely on defaults defined in the reusable workflow.
+
+---
+
+## Reference
+
+### Reusable workflows
+
+#### `claude-fix.yml`
+
+Claude Code runs in the GitHub Actions runner with the SonarQube MCP server as a Docker sidecar. It reads files, queries SonarQube for rule details, applies fixes, runs Agentic Analysis to verify, and pushes commits.
+
+| Input               | Required | Default                          | Description                    |
+|---------------------|----------|----------------------------------|--------------------------------|
+| `sonar-project-key` | Yes      | —                                | SonarQube project key          |
+| `sonar-org`         | No       | `""`                             | SonarQube Cloud org key        |
+| `sonar-host-url`    | No       | `https://sonarcloud.io`          | SonarQube host URL             |
+| `config-path`       | No       | `.github/sonar-fix-config.yml`   | Path to fix config             |
+| `claude-model`      | No       | `claude-sonnet-4-6`              | Claude model to use            |
+| `run-sonar-scan`    | No       | `true`                           | Set `false` if scan runs elsewhere |
+| `enable-agentic-analysis` | No | `false`                          | Enables `run_advanced_code_analysis` and the full MCP toolset. Requires SonarQube Cloud Team or Enterprise. The example caller turns this on. |
+| `pr-number`         | Yes      | —                                | PR number (caller resolves)    |
+| `pr-branch`         | Yes      | —                                | PR head branch (caller resolves) |
 
 **Secrets:** `SONAR_TOKEN`, `ANTHROPIC_API_KEY`
 
-### Copilot Coding Agent
+#### `copilot-fix.yml`
 
-**File:** `.github/workflows/copilot-fix.yml`
+Posts an `@copilot` comment on the PR with the triaged issues. GitHub Copilot's coding agent picks it up and pushes fixes from its own session.
 
-Posts an `@copilot` comment on the PR with the triaged issues. Copilot picks it up and pushes fixes.
-
-**Inputs:**
-
-| Input               | Required | Default                  | Description                    |
-|---------------------|----------|--------------------------|--------------------------------|
-| `sonar-project-key` | Yes      | —                        | SonarQube project key          |
-| `config-path`       | No       | `.github/sonar-fix-config.yml` | Path to fix config |
-| `sonar-host-url`    | No       | `https://sonarcloud.io`  | SonarQube host URL             |
-| `run-sonar-scan`    | No       | `true`                   | Set `false` if scan runs elsewhere |
+| Input               | Required | Default                          | Description                    |
+|---------------------|----------|----------------------------------|--------------------------------|
+| `sonar-project-key` | Yes      | —                                | SonarQube project key          |
+| `sonar-host-url`    | No       | `https://sonarcloud.io`          | SonarQube host URL             |
+| `config-path`       | No       | `.github/sonar-fix-config.yml`   | Path to fix config             |
+| `run-sonar-scan`    | No       | `true`                           | Set `false` if scan runs elsewhere |
+| `pr-number`         | Yes      | —                                | PR number (caller resolves)    |
+| `pr-branch`         | Yes      | —                                | PR head branch (caller resolves) |
 
 **Secrets:** `SONAR_TOKEN`, `COPILOT_PAT`
 
 **Additional setup:** Each consuming repo must have the SonarQube MCP server configured in Copilot's settings. See `examples/copilot-mcp-setup.json`.
 
-## Configuration
+### `sonar-fix-config.yml`
 
-Each consuming repo has its own `.github/sonar-fix-config.yml` that controls:
+Per-repo config controlling which issues get auto-fixed vs. flagged for human review. The triage script (`triage-action/triage_sonar_issues.py`) applies a priority chain:
 
-- **`agent`** — `claude`, `copilot`, or `both`
-- **`auto_fix.severities`** — Which severities to fix
-- **`auto_fix.types`** — Which issue types (BUG, CODE_SMELL, etc.)
-- **`auto_fix.rules.allow`** — Rules always fixed
-- **`auto_fix.rules.deny`** — Rules never fixed (security-sensitive, etc.)
-- **`paths.exclude`** — File globs to skip
-- **`guardrails.max_issues_per_run`** — Cost cap
-- **`guardrails.max_turns`** — Agent iteration cap
+```
+deny list → allow list → path exclusions → severity/type match
+```
+
+Issues matching ALL filters land in `auto_fix`; everything else is `review_only`.
+
+| Section | What it controls |
+|---|---|
+| `agent` | `claude`, `copilot`, or `both` |
+| `auto_fix.severities` | Which Sonar severities to fix (e.g. `BLOCKER`, `CRITICAL`, `MAJOR`) |
+| `auto_fix.types` | Which issue types (`BUG`, `CODE_SMELL`, `VULNERABILITY`) |
+| `auto_fix.rules.allow` | Rule keys ALWAYS fixed (overrides severity/type filter) |
+| `auto_fix.rules.deny` | Rule keys NEVER fixed — sent to review-only (overrides everything) |
+| `paths.exclude` | File globs to skip entirely (test fixtures, generated code) |
+| `guardrails.max_issues_per_run` | Hard cap on issues sent to the agent — controls cost |
+| `guardrails.max_turns` | Agent iteration cap |
 
 See `examples/sonar-fix-config.yml` for a fully annotated starter config.
 
-## Architecture
+### `AGENTS.md`
+
+The agent prompt, read from the consuming repo's root by Claude Code and GitHub Copilot's coding agent. Defines the SonarQube **Guide → Fix → Verify** protocol the agent must follow:
+
+- **Guide** — gather context via `get_guidelines`, `search_by_signature_patterns`, `get_current_architecture`, etc. before editing
+- **Fix** — for each issue, call `show_rule` to read the rationale, then apply a minimal targeted change
+- **Verify** — after every file modification, call `run_advanced_code_analysis` to catch regressions; max 3 fix-verify cycles per file
+- **Commit** — subject must start with `fix: resolve SonarQube issues` (the loop guard depends on this prefix)
+
+Copy `examples/AGENTS.md` as-is for the standard flow. Add project-specific guidance below the standard sections — coding conventions, languages, package layout — and the agent will pick those up alongside the SonarQube protocol.
+
+### When SonarQube already scans on PRs
+
+Most teams already have a CI step that runs the Sonar scanner. Set `run-sonar-scan: false` in the caller workflow — the triage job will skip the scan step and fetch existing issues straight from the SonarQube API:
+
+```yaml
+uses: my-org/sonar-fix/.github/workflows/claude-fix.yml@v1
+with:
+  sonar-project-key: ${{ vars.SONAR_PROJECT_KEY }}
+  run-sonar-scan: false
+secrets: inherit
+```
+
+The `examples/caller-comment-triggered.yml` already sets this — the comment trigger fires *after* SonarCloud's analysis completes, so re-running the scan would be redundant.
+
+### Versioning
+
+Tag releases on the central repo (`v1`, `v1.1`, etc.). Consuming repos pin to a tag:
+
+```yaml
+uses: my-org/sonar-fix/.github/workflows/claude-fix.yml@v1
+```
+
+Use `@main` during development, pin to tags for production rollouts.
+
+### Architecture (under the hood)
 
 ```
                   ┌─────────────────────────────────┐
@@ -167,26 +313,4 @@ See `examples/sonar-fix-config.yml` for a fully annotated starter config.
           │                  │   │   comment triggers   │
           │                  │   │   coding agent       │
           └──────────────────┘   └──────────────────────┘
-```
-
-## Versioning
-
-Tag releases on this repo (`v1`, `v1.1`, etc.). Consuming repos reference a tag:
-
-```yaml
-uses: my-org/sonar-fix/.github/workflows/claude-fix.yml@v1
-```
-
-Use `@main` during development, pin to tags for production.
-
-## If Your SonarQube Scan Already Runs Separately
-
-Set `run-sonar-scan: false` in the caller workflow. The triage job will skip the scan step and just fetch existing issues from SonarQube.
-
-```yaml
-uses: my-org/sonar-fix/.github/workflows/claude-fix.yml@v1
-with:
-  sonar-project-key: ${{ vars.SONAR_PROJECT_KEY }}
-  run-sonar-scan: false
-secrets: inherit
 ```
