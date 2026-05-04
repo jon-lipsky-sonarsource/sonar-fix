@@ -502,10 +502,19 @@ jobs:
       # agent commit correctly but skip the push, losing the work to the
       # ephemeral runner). Always runs after a successful agent step. No-op
       # when the agent didn't make any new commits.
+      #
+      # Auth note: claude-code-action sets up git auth for its own use during
+      # the agent step using a short-lived OIDC-derived token, then revokes
+      # that token when its run completes. So we can't piggyback on that auth
+      # here — reconfigure the remote with the workflow's GITHUB_TOKEN, which
+      # has `contents: write` per the caller's permissions block.
       - name: Push agent commits
         env:
           PR_BRANCH: ${{ inputs.pr-branch }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git"
           git fetch origin "$PR_BRANCH" --quiet
           NEW_COMMITS=$(git rev-list --count "origin/$PR_BRANCH..HEAD" 2>/dev/null || echo 0)
           if [ "$NEW_COMMITS" = "0" ]; then
@@ -515,3 +524,13 @@ jobs:
           echo "Pushing $NEW_COMMITS commit(s) to origin/$PR_BRANCH:"
           git log --oneline "origin/$PR_BRANCH..HEAD"
           git push origin "HEAD:refs/heads/$PR_BRANCH"
+          # Note: pushes made with GITHUB_TOKEN don't trigger downstream
+          # workflows in the calling repo (per GitHub's recursive-trigger
+          # protection). That means the consumer's build.yml won't auto-run
+          # on this push, and a CI-driven SonarCloud scan won't re-trigger
+          # on its own. The loop still works whenever SonarCloud reanalyzes
+          # via webhook (its own integration) or via "automatic analysis"
+          # mode. For consumers whose Sonar scan is gated on build.yml, the
+          # next iteration of the loop won't fire automatically — they can
+          # comment /sonar-fix to retrigger manually, or set up a PAT to
+          # bypass the recursive-trigger protection.
