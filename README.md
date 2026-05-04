@@ -69,7 +69,20 @@ Same screen → **Variables** tab → **New organization variable**:
 | `SONAR_HOST_URL`    | e.g. `https://sonarcloud.io`            |
 | `SONAR_ORG`         | SonarQube Cloud org key (if applicable) |
 
-### 1.4 (Optional) Route Claude through an API gateway
+### 1.4 Install the Claude Code GitHub App (Claude path only)
+
+The `anthropics/claude-code-action@v1` action exchanges a GitHub OIDC token for a Claude-issued app token before each run, regardless of whether you authenticate via direct API key, OAuth, or a proxy like Portkey. That exchange requires the **Claude Code GitHub App** to be installed on the repo (or the org/user account, with access granted to the relevant repos).
+
+1. Go to **<https://github.com/apps/claude>** → **Install**
+2. Choose your account (the one that owns the consuming repos)
+3. Either grant access to **All repositories** (recommended for org-wide rollout) or pick the specific repos you'll install sonar-fix into
+4. Confirm
+
+The App is free and only grants the minimum access claude-code-action needs. There's no recurring cost or billing relationship — your actual Anthropic billing continues via your `ANTHROPIC_API_KEY` (or via your gateway in 1.5).
+
+> Skip this step entirely if you'll only use the Copilot path — `copilot-fix.yml` doesn't run claude-code-action.
+
+### 1.5 (Optional) Route Claude through an API gateway
 
 If your org accesses Claude via Portkey, Helicone, or an internal proxy instead of calling `api.anthropic.com` directly, add a variable and a secret. The workflow handles the boring bits — auth-token placeholders, when to forward your real Anthropic key — based on what's set.
 
@@ -80,7 +93,7 @@ If your org accesses Claude via Portkey, Helicone, or an internal proxy instead 
 | `ANTHROPIC_BASE_URL` | variable | `https://api.portkey.ai` |
 | `ANTHROPIC_CUSTOM_HEADERS` | secret | `x-portkey-api-key: pk_xxxxx` (one header per line for multiple) |
 
-Skip `ANTHROPIC_API_KEY` from 1.2 — the workflow auto-substitutes a placeholder when proxying, and the gateway ignores it.
+Skip `ANTHROPIC_API_KEY` from 1.2 — the workflow auto-substitutes a placeholder when proxying, and the gateway ignores it. The Claude Code GitHub App from 1.4 is still required (it gates the action's run, not the API call itself).
 
 **Observability proxies (Helicone, etc.):** the proxy forwards your request to Anthropic; you still need your real Anthropic key in addition to the proxy's auth.
 
@@ -172,6 +185,7 @@ The Actions tab is the source of truth — open the failed run, click the failed
 | **No workflow run appears at all** when SonarCloud's bot comments on the PR | Bot login mismatch. The workflow's filter expects `sonarqubecloud[bot]` by default; your Sonar product may use a different login (older `sonarcloud[bot]`, on-prem variant, etc.). | Open a recent PR comment from the Sonar bot and copy the exact author login. Set it as a repo variable `SONAR_BOT_LOGIN` (Settings → Secrets and variables → Actions → Variables) — both the job filter and the env read from it. |
 | **Workflow run appears, completes in ~1 second with `startup_failure` and zero jobs.** No log archive, no useful API output. | Caller is missing the `permissions:` block. The reusable workflow needs `contents: write` etc. to push the fix commit, but the calling repo's default token is read-only. The UI shows the actual error: *"is requesting 'contents: write' but is only allowed 'contents: read'"*. | Confirm your caller (`.github/workflows/sonar-fix.yml`) has the `permissions:` block at the workflow level — the current `examples/caller-comment-triggered.yml` does. If you copied an older version, re-pull from this repo. |
 | **"Run Claude Code" step fails:** *"Could not fetch an OIDC token. Did you remember to add `id-token: write` to your workflow permissions?"* | `claude-code-action@v1` authenticates via OIDC and needs `id-token: write` in addition to the contents/PR/issues writes. | Add `id-token: write` to the caller's `permissions:` block. The current `examples/caller-comment-triggered.yml` already has it; if you copied a pre-fix version, re-pull. |
+| **"Run Claude Code" step fails:** *"401 Unauthorized — Claude Code is not installed on this repository. Please install the Claude Code GitHub App at <https://github.com/apps/claude>"* | The OIDC → app-token exchange requires the Claude Code GitHub App to be installed on the consuming repo (or its parent account), regardless of whether you use a direct API key or a proxy. | Install the App per Phase 1.4. Re-trigger with `/sonar-fix` — no workflow changes needed. |
 | **`/sonar-fix` comment posted, no workflow runs** | Commenter's `author_association` isn't `OWNER`/`MEMBER`/`COLLABORATOR`. The workflow filter silently rejects to prevent drive-by commenters from running billable agent jobs on public repos. | Have someone with write access to the repo post the comment. |
 | Workflow runs, "Detect Trigger" sets `should_run=false` | The PR is closed/merged, or this is a sonar-bot trigger and QG already passed. | If you intend to re-fix on a passing QG, use `/sonar-fix` — it bypasses the QG check. |
 | "Scan & Triage" fails fetching issues | `SONAR_TOKEN` missing, scoped to the wrong project, or `SONAR_PROJECT_KEY` repo variable wrong. | Confirm the existing build workflow (if any) can authenticate to SonarCloud — same token. Cross-check `vars.SONAR_PROJECT_KEY` against the project key in `sonar.projectKey` in your build config. |
