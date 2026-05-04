@@ -57,7 +57,7 @@ Then go to **Settings → Actions → General** on the new repo and set "Access"
 | Secret              | Required By | Description                                |
 |---------------------|-------------|--------------------------------------------|
 | `SONAR_TOKEN`       | Both        | SonarQube user token                       |
-| `ANTHROPIC_API_KEY` | Claude      | Anthropic API key for Claude Code          |
+| `ANTHROPIC_API_KEY` | Claude      | Anthropic API key. Skip if you only ever route through a virtual-key gateway like Portkey (see 1.4) — the workflow uses a placeholder. Set to your real key for direct Anthropic or for Helicone-style observability proxies that forward to Anthropic. |
 | `COPILOT_PAT`       | Copilot     | GitHub PAT (classic, `repo` scope) from a Copilot subscriber |
 
 ### 1.3 Add org-level variables
@@ -71,17 +71,26 @@ Same screen → **Variables** tab → **New organization variable**:
 
 ### 1.4 (Optional) Route Claude through an API gateway
 
-If your org accesses Claude via Portkey, Helicone, or an internal proxy instead of calling `api.anthropic.com` directly, add the gateway settings as a variable + two secrets:
+If your org accesses Claude via Portkey, Helicone, or an internal proxy instead of calling `api.anthropic.com` directly, add a variable and a secret. The workflow handles the boring bits — auth-token placeholders, when to forward your real Anthropic key — based on what's set.
+
+**Virtual-key gateways (Portkey, etc.):** the gateway has its own keys; your real Anthropic credentials live on the gateway side.
 
 | Name | Type | Example |
 |---|---|---|
 | `ANTHROPIC_BASE_URL` | variable | `https://api.portkey.ai` |
-| `ANTHROPIC_AUTH_TOKEN` | secret | `dummy` for Portkey; whatever the gateway expects |
 | `ANTHROPIC_CUSTOM_HEADERS` | secret | `x-portkey-api-key: pk_xxxxx` (one header per line for multiple) |
 
-`ANTHROPIC_API_KEY` is still required (`claude-code-action` won't run without it) but the SDK ignores it once `ANTHROPIC_AUTH_TOKEN` is set — set it to `dummy`.
+Skip `ANTHROPIC_API_KEY` from 1.2 — the workflow auto-substitutes a placeholder when proxying, and the gateway ignores it.
 
-The reusable workflow exports these to the Claude step's environment only when set, so direct-Anthropic users can ignore this section.
+**Observability proxies (Helicone, etc.):** the proxy forwards your request to Anthropic; you still need your real Anthropic key in addition to the proxy's auth.
+
+| Name | Type | Example |
+|---|---|---|
+| `ANTHROPIC_BASE_URL` | variable | `https://api.helicone.ai` |
+| `ANTHROPIC_API_KEY` | secret (from 1.2) | your real Anthropic key (gets forwarded) |
+| `ANTHROPIC_CUSTOM_HEADERS` | secret | `Helicone-Auth: Bearer hk_xxxxx` |
+
+The reusable workflow exports `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN=dummy`, and `ANTHROPIC_CUSTOM_HEADERS` to the Claude step's environment only when `ANTHROPIC_BASE_URL` is set, so direct-Anthropic users can ignore this section.
 
 ### Verifying Phase 1
 
@@ -227,7 +236,7 @@ Claude Code runs in the GitHub Actions runner with the SonarQube MCP server as a
 | `pr-number`         | Yes      | —                                | PR number (caller resolves)    |
 | `pr-branch`         | Yes      | —                                | PR head branch (caller resolves) |
 
-**Secrets:** `SONAR_TOKEN`, `ANTHROPIC_API_KEY` (required); `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_CUSTOM_HEADERS` (optional, only when `anthropic-base-url` is set)
+**Secrets:** `SONAR_TOKEN` (required). `ANTHROPIC_API_KEY` (required for direct Anthropic or Helicone-style observability proxies; skip for virtual-key gateways like Portkey — workflow uses a placeholder). `ANTHROPIC_CUSTOM_HEADERS` (optional, only when `anthropic-base-url` is set).
 
 #### `copilot-fix.yml`
 

@@ -91,15 +91,11 @@ on:
         required: true
       ANTHROPIC_API_KEY:
         description: >
-          Anthropic API key. Required even when proxying — the underlying
-          claude-code-action requires a non-empty value. Set to "dummy" when
-          using a proxy and rely on ANTHROPIC_AUTH_TOKEN below for actual auth.
-        required: true
-      ANTHROPIC_AUTH_TOKEN:
-        description: >
-          Optional. Auth token sent to the Anthropic-compatible endpoint when
-          proxying. With Portkey this is typically the literal "dummy"; with
-          other gateways it may be a real bearer token.
+          Anthropic API key. Required when calling Anthropic directly. When
+          routing through a virtual-key gateway like Portkey, leave unset —
+          the workflow passes a placeholder. When routing through an
+          observability proxy like Helicone that forwards to Anthropic, set
+          this to your real Anthropic key.
         required: false
       ANTHROPIC_CUSTOM_HEADERS:
         description: >
@@ -371,25 +367,39 @@ jobs:
         run: docker pull mcp/sonarqube
 
       # Optional API-gateway support (Portkey, Helicone, internal proxy, etc.).
-      # When the caller passes anthropic-base-url and the optional auth/headers
-      # secrets, export them to GITHUB_ENV so the next step's claude-code-action
-      # inherits them and the Anthropic SDK routes through the proxy. Each var
-      # is exported only if non-empty — direct-Anthropic users see no change.
+      # When the caller passes anthropic-base-url, export the proxy env vars
+      # so the next step's claude-code-action inherits them and the Anthropic
+      # SDK routes through the gateway. Direct-Anthropic users (no base-url)
+      # skip this entirely and see no behavior change.
+      #
+      # ANTHROPIC_AUTH_TOKEN is hardcoded to "dummy" because for the gateway
+      # patterns we support (virtual-key like Portkey, observability like
+      # Helicone), the Authorization header is either ignored by the gateway
+      # or unused — the real auth lives in ANTHROPIC_CUSTOM_HEADERS or in
+      # ANTHROPIC_API_KEY. The SDK requires *some* value, so we provide one.
       - name: Configure Anthropic endpoint (proxy support)
+        if: inputs.anthropic-base-url != ''
         env:
           BASE_URL: ${{ inputs.anthropic-base-url }}
-          AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
           CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS }}
         run: |
-          [ -n "$BASE_URL" ]       && echo "ANTHROPIC_BASE_URL=$BASE_URL"             >> "$GITHUB_ENV"
-          [ -n "$AUTH_TOKEN" ]     && echo "ANTHROPIC_AUTH_TOKEN=$AUTH_TOKEN"         >> "$GITHUB_ENV"
+          echo "ANTHROPIC_BASE_URL=$BASE_URL"                                       >> "$GITHUB_ENV"
+          echo "ANTHROPIC_AUTH_TOKEN=dummy"                                         >> "$GITHUB_ENV"
           [ -n "$CUSTOM_HEADERS" ] && echo "ANTHROPIC_CUSTOM_HEADERS=$CUSTOM_HEADERS" >> "$GITHUB_ENV"
-          : # always exit 0 even when all three are empty
+          : # always exit 0 even when CUSTOM_HEADERS is empty
 
+      # anthropic_api_key:
+      #   - If ANTHROPIC_API_KEY is set, use it (direct-Anthropic OR Helicone-
+      #     style observability proxy that forwards the real key to Anthropic).
+      #   - Else if proxying via a virtual-key gateway (anthropic-base-url set,
+      #     no API_KEY secret), pass "dummy" — the gateway ignores it and uses
+      #     ANTHROPIC_CUSTOM_HEADERS for real auth.
+      #   - Else (no key, no proxy), pass empty so claude-code-action fails
+      #     with its own clear error.
       - name: Run Claude Code to fix issues
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY || (inputs.anthropic-base-url != '' && 'dummy' || '') }}
 
           prompt: |
             Fix the SonarQube issues listed below in this pull request.
