@@ -91,14 +91,18 @@ specific SonarQube issues identified in pull requests.
    Pre-existing project-wide issues (like package naming conventions) that
    you did not introduce can be noted and ignored.
 
-### COMMIT
+### COMMIT AND PUSH
 
-After all files pass verification, commit with a clear message. The
-subject line MUST start with `fix: resolve SonarQube issues` — the
+After all files pass verification, commit AND push. Both steps are
+required — the runner is ephemeral, so a commit that isn't pushed is
+lost when the workflow ends.
+
+The subject line MUST start with `fix: resolve SonarQube issues` — the
 comment-triggered caller workflow counts these to enforce its loop guard.
 
-```
-fix: resolve SonarQube issues (automated)
+```bash
+git add <changed files>
+git commit -m "fix: resolve SonarQube issues (automated)
 
 Fixes:
 - java:S1481 in src/main/Foo.java:42 — removed unused variable
@@ -108,7 +112,13 @@ Verified clean via Agentic Analysis (0 new issues in modified files).
 
 Skipped:
 - java:S2259 in src/main/Baz.java:88 — ambiguous null flow, needs human review
+"
+git push origin HEAD
 ```
+
+The workflow has already configured git authentication for `claude[bot]`,
+so `git push origin HEAD` will succeed without further setup. Don't
+create a new branch — push to the PR branch you're already on.
 
 ## Rules
 
