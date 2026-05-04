@@ -35,11 +35,15 @@ triage-action/
 
 examples/
   caller-comment-triggered.yml  # Caller: fires on SonarCloud bot PR comment
-  caller-claude.yml       # Caller: fires on PR open/push (Claude)
-  caller-copilot.yml      # Caller: fires on PR open/push (Copilot)
-  sonar-fix-config.yml      # Per-repo config controlling what gets fixed
+  caller-claude.yml             # Caller: fires on PR open/push (Claude)
+  caller-copilot.yml            # Caller: fires on PR open/push (Copilot)
+  sonar-fix-config.yml          # Per-repo config (consumers copy this if overriding)
   copilot-mcp-setup.json        # MCP config for Copilot coding agent settings
-  AGENTS.md                     # Agent instructions (cross-agent) used during fix runs
+
+prompts/
+  sonar-fix-agent.md            # Central agent prompt — injected into the consumer's
+                                # AGENTS.md (Claude) or @copilot comment (Copilot) at
+                                # run time. Single source of truth for the protocol.
 ```
 
 ## Key Design Decisions
@@ -111,8 +115,8 @@ and verify the categorization logic in isolation.
 3. Pick a test repo that already has SonarCloud configured with PR comments
 4. Add to the test repo:
    - `.github/workflows/sonar-fix.yml` (from `examples/caller-comment-triggered.yml`)
-   - `.github/sonar-fix-config.yml` (from `examples/sonar-fix-config.yml`)
-   - `AGENTS.md` (from `examples/AGENTS.md`)
+   - `.github/sonar-fix-config.yml` (from `examples/sonar-fix-config.yml`) — optional once the default-fallback work lands
+   - **No AGENTS.md** — the workflow injects `prompts/sonar-fix-agent.md` into AGENTS.md at run time, shielded from being committed back
 5. Set org-level secrets: `SONAR_TOKEN`, `ANTHROPIC_API_KEY`
 6. Set repo variable: `SONAR_PROJECT_KEY`
 7. Open a PR that introduces code with known SonarQube issues

@@ -1,9 +1,16 @@
-# AGENTS.md — SonarQube Fix Agent Instructions
+# SonarQube Fix Agent Instructions
 
-These instructions are intentionally agent-agnostic — they apply to any
-coding agent the fix workflow dispatches to (Claude Code today,
-GitHub Copilot's coding agent via the Copilot workflow, and any future tool
-that reads `AGENTS.md` from the repo root).
+This file is the central agent prompt for sonar-fix runs. The reusable
+workflow injects it into the consuming repo's `AGENTS.md` at run time
+(appending after a separator if `AGENTS.md` already exists, or creating
+one if not), shielded from being committed back to the consumer's repo.
+It is therefore the single source of truth for how every agent across
+every consuming repo should approach a sonar-fix run — edit here once,
+every consumer picks it up on the next run.
+
+The instructions are intentionally agent-agnostic. Claude Code reads
+this from `AGENTS.md` in the working directory; the Copilot workflow
+inlines the same content into its `@copilot` comment body.
 
 ## Role
 

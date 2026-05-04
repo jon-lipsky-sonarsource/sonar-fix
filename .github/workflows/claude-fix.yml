@@ -221,6 +221,30 @@ jobs:
           ref: ${{ inputs.pr-branch }}
           fetch-depth: 0
 
+      # Pull the central sonar-fix repo so we can inject the agent prompt
+      # without asking consumers to ship our prompt fragment in their repo.
+      - name: Checkout sonar-fix repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sonar-fix
+          path: .sonar-fix-action
+
+      # Inject the central sonar-fix agent prompt into AGENTS.md so the
+      # Claude Code action picks it up automatically. Shielded from being
+      # committed back: existing files are marked skip-worktree, new files
+      # are added to .git/info/exclude. The agent reads it from the working
+      # tree like any other AGENTS.md; git ignores our edits to it.
+      - name: Inject sonar-fix agent prompt into AGENTS.md
+        run: |
+          if [ -f AGENTS.md ]; then
+            git update-index --skip-worktree AGENTS.md
+            printf '\n\n---\n\n' >> AGENTS.md
+          else
+            echo "AGENTS.md" >> .git/info/exclude
+          fi
+          cat .sonar-fix-action/prompts/sonar-fix-agent.md >> AGENTS.md
+          echo "Injected sonar-fix agent prompt into AGENTS.md ($(wc -l < AGENTS.md) lines total)"
+
       - name: Create MCP config
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -313,76 +337,21 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 
           prompt: |
-            You are an expert code quality remediation agent. Fix the following
-            SonarQube issues identified in this pull request using the
-            Guide → Generate → Verify loop.
+            Fix the SonarQube issues listed below in this pull request.
 
-            ## Issues to Fix
+            Follow the Guide → Fix → Verify protocol described in `AGENTS.md`
+            in the repo root. That file is the single source of truth for the
+            tool sequence, rule lookup, verification cycles, commit format,
+            and guardrails. The workflow has just injected the central
+            sonar-fix instructions into it — read AGENTS.md before you start.
+
+            ${{ inputs.enable-agentic-analysis && format('Note: agentic analysis is ENABLED for this run. When you call `run_advanced_code_analysis`, pass `branchName: "{0}"`.', inputs.pr-branch) || 'Note: agentic analysis is DISABLED for this run; skip the VERIFY step that calls `run_advanced_code_analysis` and review your changes for correctness instead.' }}
+
+            ## Issues to fix
 
             ```json
             ${{ toJSON(fromJSON(needs.scan-and-triage.outputs.issues_json).auto_fix) }}
             ```
-
-            ## Workflow — Guide → Fix → Verify
-
-            ### Step 1: GUIDE (Context Augmentation)
-            Before making any changes, gather context:
-            - Call `get_guidelines` with mode "combined" and categories relevant to
-              the issues (e.g. "Code Complexity & Maintainability",
-              "Naming Conventions & Code Style", "Exception/Error Handling",
-              "Type System & Generics") and the primary language of the files.
-            - To locate code, prefer the SonarQube index over filesystem search:
-              `search_by_signature_patterns` (find by method/class signature),
-              `search_by_body_patterns` (find by code content), then
-              `get_source_code` to read the implementation. Fall back to Read/Grep
-              only when the index doesn't surface the target.
-            - If modifying existing classes, call `get_current_architecture` to
-              understand package structure; pair with `get_intended_architecture`
-              when the fix touches layering or boundaries.
-            - If changing method signatures, public APIs, or call sites, run impact
-              analysis: `get_references` (every usage), `get_upstream_call_flow`
-              and `get_downstream_call_flow` (callers/callees), `get_type_hierarchy`
-              (inheritance and implementers).
-            - Use this context to inform your fixes — avoid patterns the guidelines
-              flag, and follow existing architectural conventions.
-
-            ### Step 2: FIX (Generate)
-            For each issue:
-            1. Call `show_rule` with the rule key (e.g. `java:S1874`) to get
-               the full description. Read the compliant/non-compliant examples
-               — they make the fix pattern clear.
-            2. Read the affected file and understand the surrounding context.
-            3. Apply a minimal, targeted fix that resolves the issue while
-               maintaining the code's existing behavior.
-            4. If a fix requires structural refactoring (e.g. extracting a class
-               to reduce parameter count, or restructuring a loop), do it
-               thoughtfully — don't just suppress the symptom.
-            5. If unsure about a fix, skip it and note why.
-
-            ### Step 3: VERIFY (Agentic Analysis)
-            After fixing all issues in a file:
-            ${{ inputs.enable-agentic-analysis && format('- Call `run_advanced_code_analysis` on each modified file. Pass `filePath` (project-relative, e.g. `src/main/java/com/x/Foo.java`), `branchName: "{0}"`, and `fileScope: ["MAIN"]` for production code or `["TEST"]` for tests.', inputs.pr-branch) || '- Review your changes carefully for correctness.' }}
-            ${{ inputs.enable-agentic-analysis && '- If new issues are found, fix them and re-analyze.' || '' }}
-            ${{ inputs.enable-agentic-analysis && '- Maximum 3 fix-verify cycles per file. If issues persist, stop and report them.' || '' }}
-            ${{ inputs.enable-agentic-analysis && '- Only declare a file done when analysis returns zero new fixable issues.' || '' }}
-
-            ### Step 4: COMMIT
-            Once all files are clean, commit with message:
-            "fix: resolve SonarQube issues (automated)"
-
-            Post a summary of:
-            - Issues fixed (rule, file, what you changed)
-            - Issues skipped (rule, file, why)
-            ${{ inputs.enable-agentic-analysis && '- Verification results (pass/fail per file, iterations needed)' || '' }}
-
-            ## Guardrails
-
-            - Fix ONLY the listed issues. No other refactoring.
-            - Do NOT modify test files unless the issue is in a test file.
-            - Do NOT add new dependencies.
-            - Skip ambiguous fixes — false fixes are worse than unfixed issues.
-            - Prefer holistic refactoring over rule-by-rule fixes when multiple
-              issues affect the same method or class.
 
           claude_args: |
             --max-turns ${{ fromJSON(needs.scan-and-triage.outputs.issues_json).config.max_turns }}

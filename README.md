@@ -81,7 +81,7 @@ The goal of this phase is to confirm your wiring works end-to-end — secrets re
 
 Until you comment `/sonar-fix`, nothing happens. This makes the pilot easy to debug.
 
-### 2.1 Add three files to your test repo
+### 2.1 Add two files to your test repo
 
 ```
 your-repo/
@@ -89,12 +89,18 @@ your-repo/
 │   ├── workflows/
 │   │   └── sonar-fix.yml          ← copy from examples/caller-comment-triggered.yml
 │   └── sonar-fix-config.yml       ← copy from examples/sonar-fix-config.yml
-└── AGENTS.md                      ← copy from examples/AGENTS.md
 ```
 
 In `sonar-fix.yml`, replace `my-org` with your org name.
 
-> **`AGENTS.md`** is the agent's playbook for fix runs — Guide → Fix → Verify, MCP tool list, commit conventions. Claude Code and GitHub Copilot's coding agent both read it from the repo root. Copy it as-is to start; customize once you have the basic flow working.
+> **No `AGENTS.md` to copy.** The reusable workflow injects its agent prompt
+> (`prompts/sonar-fix-agent.md` in this repo) into your repo's `AGENTS.md` at
+> run time, shielded from being committed back. If your repo already has an
+> `AGENTS.md` with project-specific guidance, our content is appended after a
+> separator for the duration of the run only — your file is unchanged outside
+> sonar-fix runs. This means improvements to the agent prompt (new MCP tools,
+> updated rule lookups, etc.) reach every consumer on their next run with no
+> per-repo update.
 
 ### 2.2 Add the per-repo variable
 
@@ -246,16 +252,21 @@ Issues matching ALL filters land in `auto_fix`; everything else is `review_only`
 
 See `examples/sonar-fix-config.yml` for a fully annotated starter config.
 
-### `AGENTS.md`
+### Agent prompt (`prompts/sonar-fix-agent.md`)
 
-The agent prompt, read from the consuming repo's root by Claude Code and GitHub Copilot's coding agent. Defines the SonarQube **Guide → Fix → Verify** protocol the agent must follow:
+The central agent prompt lives in this repo at `prompts/sonar-fix-agent.md` and defines the SonarQube **Guide → Fix → Verify** protocol every agent must follow:
 
 - **Guide** — gather context via `get_guidelines`, `search_by_signature_patterns`, `get_current_architecture`, etc. before editing
 - **Fix** — for each issue, call `show_rule` to read the rationale, then apply a minimal targeted change
 - **Verify** — after every file modification, call `run_advanced_code_analysis` to catch regressions; max 3 fix-verify cycles per file
 - **Commit** — subject must start with `fix: resolve SonarQube issues` (the loop guard depends on this prefix)
 
-Copy `examples/AGENTS.md` as-is for the standard flow. Add project-specific guidance below the standard sections — coding conventions, languages, package layout — and the agent will pick those up alongside the SonarQube protocol.
+How it gets to the agent:
+
+- **Claude path** — the workflow appends this file to the consumer's `AGENTS.md` at run time (shielded from being committed back via `git update-index --skip-worktree`, or `.git/info/exclude` if no `AGENTS.md` existed). Claude Code reads `AGENTS.md` from the working tree as it normally would.
+- **Copilot path** — the workflow inlines the file's contents into the `@copilot` PR comment body alongside the issue list.
+
+Either way, this is the single source of truth. If the SonarQube MCP server gains a new tool, edit this one file and every consumer picks it up on their next run — no per-repo change required.
 
 ### When SonarQube already scans on PRs
 

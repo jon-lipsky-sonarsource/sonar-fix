@@ -159,15 +159,29 @@ jobs:
        needs.scan-and-triage.outputs.agent == 'both')
     runs-on: ubuntu-latest
     steps:
+      # Pull the central sonar-fix repo so we can inline its agent prompt
+      # into the @copilot comment. Single source of truth for the protocol
+      # — improvements here apply to every consumer on the next run.
+      - name: Checkout sonar-fix repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sonar-fix
+          path: .sonar-fix-action
+
       - name: Trigger Copilot via @copilot comment
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.COPILOT_PAT }}
           script: |
+            const fs = require('fs');
             const issuesData = ${{ needs.scan-and-triage.outputs.issues_json }};
             const autoFix = issuesData.auto_fix || [];
 
             if (autoFix.length === 0) return;
+
+            const agentPrompt = fs.readFileSync(
+              '.sonar-fix-action/prompts/sonar-fix-agent.md', 'utf8'
+            );
 
             const issueList = autoFix.map(i => {
               let entry = `- **\`${i.rule}\`** [${i.severity}] in \`${i.component}\``;
@@ -176,25 +190,20 @@ jobs:
               return entry;
             }).join('\n');
 
-            const body = `@copilot Please fix the following SonarQube code quality issues.
-
-            ## Instructions
-
-            1. Use the SonarQube MCP server to look up each rule's full description.
-            2. Read the affected file, understand context, apply a targeted fix.
-            3. Keep changes minimal — fix only what's needed for each issue.
-            4. If unsure, skip and explain why.
-            5. Commit: "fix: resolve SonarQube issues (automated by Copilot)"
-
-            ## Issues to Fix (${autoFix.length})
-
-            ${issueList}
-
-            ## Guardrails
-
-            - Do NOT modify test files unless the issue is in a test.
-            - Do NOT refactor beyond what's needed.
-            - Push fixes as commits to this PR branch.`;
+            const body = [
+              '@copilot Please fix the following SonarQube code quality issues',
+              'in this pull request.',
+              '',
+              '---',
+              '',
+              agentPrompt,
+              '',
+              '---',
+              '',
+              `## Issues to fix (${autoFix.length})`,
+              '',
+              issueList,
+            ].join('\n');
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,
