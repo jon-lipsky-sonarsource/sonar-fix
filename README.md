@@ -38,7 +38,7 @@ Calling Repo                          Central Repo (this repo)
   - A **GitHub Copilot subscription** + a classic PAT with `repo` scope from a Copilot subscriber
 - A **test repo** with known SonarQube issues you can pilot on
 
-The setup is split into four phases. Each one is verifiable on its own — you don't run the next phase until the previous one is working.
+The setup is split into three phases. Each one is verifiable on its own — you don't run the next phase until the previous one is working.
 
 ---
 
@@ -75,11 +75,14 @@ Org admins should see the new repo, the secrets, and the variables in their resp
 
 ---
 
-## Phase 2 — Pilot on one repo with `/sonar-fix`
+## Phase 2 — Pilot on one repo
 
-The goal of this phase is to confirm your wiring works end-to-end — secrets resolve, the MCP server starts, the agent has commit permissions — by triggering a fix **manually** on a single PR.
+By the end of this phase, the test repo has **both modes live**:
 
-Until you comment `/sonar-fix`, nothing happens. This makes the pilot easy to debug.
+- **Manual** — a reviewer comments `/sonar-fix` on a PR to trigger a fix
+- **Automatic** — SonarCloud's quality gate comment fires the same workflow when QG fails, and the loop runs until QG passes (or the guard trips)
+
+You install the caller workflow once, then validate with `/sonar-fix` first because the manual path is controllable and easy to debug. Automatic mode is already on by the time the manual run succeeds — there's no separate switch to flip.
 
 ### 2.1 Add the caller workflow to your test repo
 
@@ -115,7 +118,7 @@ In the test repo: **Settings → Secrets and variables → Actions → Variables
 |---------------------|-----------------------------------|
 | `SONAR_PROJECT_KEY` | Your SonarQube project key        |
 
-### 2.3 Trigger a fix
+### 2.3 Trigger your first fix manually
 
 1. Pick (or open) a PR on the test repo that has known SonarQube issues
 2. Comment **`/sonar-fix`** on the PR
@@ -133,7 +136,7 @@ In the **Actions** tab of the test repo you should see:
 - **Fix / Claude Fix** — pulls the SonarQube MCP Docker image, runs the agent, pushes a commit
 - A new commit on the PR with subject **`fix: resolve SonarQube issues (automated)`**
 
-The agent's commit must use that subject prefix exactly — the loop guard counts these to enforce its attempt cap (next phase).
+The agent's commit must use that subject prefix exactly — the loop guard (described in 2.6) counts these to enforce its attempt cap.
 
 ### 2.5 If something doesn't work
 
@@ -144,26 +147,22 @@ The agent's commit must use that subject prefix exactly — the loop guard count
 | "Scan & Triage" fails fetching issues | `SONAR_TOKEN` missing, scoped to wrong project, or `SONAR_PROJECT_KEY` repo variable is wrong. |
 | MCP container fails to start | Check the "Pull MCP server image" step logs. Confirm the runner has internet access to Docker Hub. |
 | Agent runs but commits nothing | `sonar-fix-config.yml` filtered everything out. Check `auto_fix.severities`, `auto_fix.rules.deny`, `paths.exclude`. |
-| Agent commit doesn't trigger another run | Expected on slash-command path. The next run only fires when the SonarCloud bot edits its comment after re-analysis (Phase 3). |
+| Agent commit doesn't trigger another run | Expected on slash-command path. The next run only fires when the SonarCloud bot edits its comment after re-analysis — see 2.6. |
 
----
+### 2.6 Automatic mode (already running)
 
-## Phase 3 — Turn on automatic mode
+The same `sonar-fix.yml` you installed in 2.1 also listens for the **SonarCloud bot's** quality gate summary comment, not just `/sonar-fix`. Once your manual run in 2.3 succeeds, the automatic loop is already live — there's nothing else to enable.
 
-There is no new file to add. The same `sonar-fix.yml` you installed in Phase 2 already listens for the **SonarCloud bot's** quality gate summary comment in addition to `/sonar-fix`. Once you've confirmed the manual flow works, the automatic flow is on by default.
-
-### How the loop runs
+**How the loop runs:**
 
 1. SonarCloud finishes analyzing the PR and posts (or edits) its summary comment
 2. The workflow filter matches the bot's comment containing "Quality Gate"
-3. If QG **passed** → workflow exits, no fix run (loop terminates)
-4. If QG **failed** → triage + agent + commit, same as Phase 2
+3. If QG **passed** → workflow exits, no fix run (loop terminates naturally)
+4. If QG **failed** → triage + agent + commit, same flow as the manual run
 5. SonarCloud re-analyzes the agent's commit and edits its summary comment
 6. Step 2 repeats — until QG passes, or the loop guard trips
 
-### Loop guard
-
-The workflow counts prior commits on the PR whose subject starts with `fix: resolve SonarQube issues`. If that count exceeds `MAX_FIX_ATTEMPTS` (default **3**), bot-triggered runs are skipped. A reviewer commenting `/sonar-fix` always bypasses the cap and forces another attempt.
+**Loop guard:** the workflow counts prior commits on the PR whose subject starts with `fix: resolve SonarQube issues`. If that count exceeds `MAX_FIX_ATTEMPTS` (default **3**), bot-triggered runs are skipped. A reviewer commenting `/sonar-fix` always bypasses the cap and forces another attempt.
 
 Knobs at the top of `sonar-fix.yml`:
 
@@ -176,13 +175,11 @@ env:
 
 > **Bot username by product:** SonarCloud (`sonarcloud.io`) → `sonarcloud[bot]`. SonarQube Cloud (`sonarqube.com`) → `SonarQubeCloud[bot]`. Check a recent PR comment to confirm.
 
-### Concurrency
-
-The workflow uses `concurrency: cancel-in-progress: true` keyed on PR number. If a new comment arrives while a previous run is going, the previous run is cancelled — newer Sonar state always wins.
+**Concurrency:** the workflow uses `concurrency: cancel-in-progress: true` keyed on PR number. If a new comment arrives while a previous run is going, the previous run is cancelled — newer Sonar state always wins.
 
 ---
 
-## Phase 4 — Roll out to more repos
+## Phase 3 — Roll out to more repos
 
 Once one repo is humming through both manual and automatic runs:
 
