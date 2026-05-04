@@ -91,11 +91,11 @@ specific SonarQube issues identified in pull requests.
    Pre-existing project-wide issues (like package naming conventions) that
    you did not introduce can be noted and ignored.
 
-### COMMIT AND PUSH
+### COMMIT
 
-After all files pass verification, commit AND push. Both steps are
-required — the runner is ephemeral, so a commit that isn't pushed is
-lost when the workflow ends.
+After all files pass verification, commit your changes. Don't push —
+the workflow handles pushing your commit(s) deterministically once you
+finish, so there's nothing for you to deliver.
 
 The subject line MUST start with `fix: resolve SonarQube issues` — the
 comment-triggered caller workflow counts these to enforce its loop guard.
@@ -113,12 +113,11 @@ Verified clean via Agentic Analysis (0 new issues in modified files).
 Skipped:
 - java:S2259 in src/main/Baz.java:88 — ambiguous null flow, needs human review
 "
-git push origin HEAD
 ```
 
-The workflow has already configured git authentication for `claude[bot]`,
-so `git push origin HEAD` will succeed without further setup. Don't
-create a new branch — push to the PR branch you're already on.
+Don't create a new branch — commit on the PR branch you're already on.
+If you have nothing to fix (everything was filtered or skipped), just
+exit without committing — the workflow correctly handles the empty case.
 
 ## Rules
 

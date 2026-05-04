@@ -496,3 +496,22 @@ jobs:
           # like the one we hit on first run. Toggle by passing show-full-output
           # from the caller (see workflow input below) or set to true here.
           show_full_output: ${{ inputs.show-full-output }}
+
+      # Workflow-driven push of the agent's commits. Pushing is plumbing —
+      # it shouldn't be subject to LLM whim (the first end-to-end run had the
+      # agent commit correctly but skip the push, losing the work to the
+      # ephemeral runner). Always runs after a successful agent step. No-op
+      # when the agent didn't make any new commits.
+      - name: Push agent commits
+        env:
+          PR_BRANCH: ${{ inputs.pr-branch }}
+        run: |
+          git fetch origin "$PR_BRANCH" --quiet
+          NEW_COMMITS=$(git rev-list --count "origin/$PR_BRANCH..HEAD" 2>/dev/null || echo 0)
+          if [ "$NEW_COMMITS" = "0" ]; then
+            echo "No new commits from the agent — nothing to push."
+            exit 0
+          fi
+          echo "Pushing $NEW_COMMITS commit(s) to origin/$PR_BRANCH:"
+          git log --oneline "origin/$PR_BRANCH..HEAD"
+          git push origin "HEAD:refs/heads/$PR_BRANCH"
