@@ -263,6 +263,26 @@ Posts an `@copilot` comment on the PR with the triaged issues. GitHub Copilot's 
 
 **Additional setup:** Each consuming repo must have the SonarQube MCP server configured in Copilot's settings. See `examples/copilot-mcp-setup.json`.
 
+### Why the caller declares the same permissions as the reusable workflow
+
+GitHub Actions reusable workflows don't automatically inherit a permissions grant from their declarations — the calling workflow's `permissions:` block sets the **cap**, and the reusable workflow's block sets what it requests within that cap. If the caller is more restrictive (or doesn't declare a block at all and the repo defaults to read-only), the call fails at validation time with errors like:
+
+> Error calling workflow … is requesting `contents: write, id-token: write, …` but is only allowed `contents: read, …`
+
+So the example callers explicitly grant:
+
+```yaml
+permissions:
+  contents: write       # push the agent's fix commit
+  pull-requests: write  # post review comments on the PR
+  issues: write         # PR comments are issue comments under the hood
+  id-token: write       # claude-code-action requests an OIDC token
+```
+
+Each one matches a permission the underlying reusable workflow asks for. The duplication is annoying, but listing it on the caller is the only way to keep "Default workflow permissions" set to read-only repo-wide while still letting sonar-fix do its job. It also keeps the auth surface visible in the consumer's own repo — anyone reviewing `.github/workflows/sonar-fix.yml` can see exactly what the workflow can do without chasing into the central repo.
+
+The Copilot caller (`caller-copilot.yml`) skips `id-token: write` because `copilot-fix.yml` only posts an `@copilot` comment and doesn't authenticate to Anthropic.
+
 ### `sonar-fix-config.yml`
 
 Per-repo config controlling which issues get auto-fixed vs. flagged for human review. The triage script (`triage-action/triage_sonar_issues.py`) applies a priority chain:
