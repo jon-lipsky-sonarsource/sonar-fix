@@ -1,8 +1,8 @@
-# CLAUDE.md — sonar-autofix Development Guide
+# CLAUDE.md — sonar-fix Development Guide
 
 ## Project Overview
 
-This is `sonar-autofix`, a central GitHub repo that provides org-wide reusable
+This is `sonar-fix`, a central GitHub repo that provides org-wide reusable
 workflows and a composite action for automatically fixing SonarQube issues on
 pull requests using AI coding agents (Claude Code or GitHub Copilot).
 
@@ -18,7 +18,7 @@ The architecture has three layers:
    as explicit inputs so they work with any trigger type.
 
 3. **Composite triage action** (`triage-action/`): A Python script + action.yml
-   that fetches SonarQube issues, categorizes them against the repo's autofix
+   that fetches SonarQube issues, categorizes them against the repo's fix
    config (severity, type, rule allow/deny lists, path exclusions), and outputs
    structured JSON.
 
@@ -26,8 +26,8 @@ The architecture has three layers:
 
 ```
 .github/workflows/
-  path2-claude-autofix.yml    # Reusable: scan → triage → Claude Code fix
-  path3-copilot-autofix.yml   # Reusable: scan → triage → @copilot comment
+  path2-claude-fix.yml    # Reusable: scan → triage → Claude Code fix
+  path3-copilot-fix.yml   # Reusable: scan → triage → @copilot comment
 
 triage-action/
   action.yml                  # Composite action definition
@@ -37,7 +37,7 @@ examples/
   caller-comment-triggered.yml  # Caller: fires on SonarCloud bot PR comment
   caller-path2-claude.yml       # Caller: fires on PR open/push (Claude)
   caller-path3-copilot.yml      # Caller: fires on PR open/push (Copilot)
-  sonar-autofix-config.yml      # Per-repo config controlling what gets auto-fixed
+  sonar-fix-config.yml      # Per-repo config controlling what gets fixed
   copilot-mcp-setup.json        # MCP config for Copilot coding agent settings
   AGENTS.md                     # Agent instructions (cross-agent) used during fix runs
 ```
@@ -81,7 +81,7 @@ pip install pyyaml
 export GITHUB_OUTPUT=$(mktemp)
 
 # Create a test config
-cp ../examples/sonar-autofix-config.yml /tmp/test-config.yml
+cp ../examples/sonar-fix-config.yml /tmp/test-config.yml
 
 # Run with mock SonarQube API responses
 # (you'll need to either mock the API or point at a real instance)
@@ -110,13 +110,13 @@ and verify the categorization logic in isolation.
 2. Go to Settings → Actions → General and enable "Allow other repos in the org"
 3. Pick a test repo that already has SonarCloud configured with PR comments
 4. Add to the test repo:
-   - `.github/workflows/sonar-autofix.yml` (from `examples/caller-comment-triggered.yml`)
-   - `.github/sonar-autofix-config.yml` (from `examples/sonar-autofix-config.yml`)
+   - `.github/workflows/sonar-fix.yml` (from `examples/caller-comment-triggered.yml`)
+   - `.github/sonar-fix-config.yml` (from `examples/sonar-fix-config.yml`)
    - `AGENTS.md` (from `examples/AGENTS.md`)
 5. Set org-level secrets: `SONAR_TOKEN`, `ANTHROPIC_API_KEY`
 6. Set repo variable: `SONAR_PROJECT_KEY`
 7. Open a PR that introduces code with known SonarQube issues
-8. Wait for SonarCloud to post its comment → verify the auto-fix workflow triggers
+8. Wait for SonarCloud to post its comment → verify the fix workflow triggers
 
 Watch for:
 - Does the `issue_comment` filter correctly match the SonarCloud bot? Check
@@ -162,7 +162,7 @@ With `enable-agentic-analysis: true`:
   support. The MCP config in `copilot-mcp-setup.json` should be updated to
   include the agentic analysis env vars.
 - [ ] Add a concurrency group to the comment-triggered caller to prevent
-  multiple auto-fix runs on the same PR if SonarCloud posts multiple comments.
+  multiple fix runs on the same PR if SonarCloud posts multiple comments.
 - [ ] Consider adding a "re-scan after fix" step that triggers a new SonarCloud
   analysis on the agent's commits, creating a feedback loop until the quality
   gate passes.
@@ -173,7 +173,7 @@ With `enable-agentic-analysis: true`:
   notifications for fix results.
 - [ ] Consider making the triage script available as a standalone CLI tool
   (with `argparse` already in place, it's close) so developers can preview
-  what would be auto-fixed locally before pushing.
+  what would be fixed locally before pushing.
 
 ## Development Commands
 
@@ -187,7 +187,7 @@ mypy triage-action/triage_sonar_issues.py
 
 # Run the triage script locally (requires SONAR_TOKEN and SONAR_HOST_URL)
 cd triage-action && python3 triage_sonar_issues.py \
-  --config ../examples/sonar-autofix-config.yml \
+  --config ../examples/sonar-fix-config.yml \
   --project-key "your-org_your-repo" \
   --branch main
 

@@ -1,8 +1,8 @@
 # =============================================================================
-# Caller Workflow: SonarQube Auto-Fix — Triggered by PR Events
+# Caller Workflow: SonarQube Fix — Triggered by PR Events
 # =============================================================================
-# This is the "classic" trigger: runs the scan and auto-fix on every PR push.
-# Use this if you want auto-fix to run regardless of quality gate status, or
+# This is the "classic" trigger: runs the scan and fix on every PR push.
+# Use this if you want fix to run regardless of quality gate status, or
 # if you don't have SonarCloud PR summary comments enabled.
 #
 # For the recommended comment-triggered approach, see:
@@ -12,19 +12,19 @@
 # Required variables: SONAR_PROJECT_KEY, SONAR_ORG
 # =============================================================================
 
-name: "SonarQube Auto-Fix"
+name: "SonarQube Fix"
 
 on:
   pull_request:
     types: [opened, synchronize]
 
 concurrency:
-  group: sonar-autofix-${{ github.event.pull_request.number }}
+  group: sonar-fix-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  sonar-autofix:
-    uses: my-org/sonar-autofix/.github/workflows/path2-claude-autofix.yml@v1
+  sonar-fix:
+    uses: my-org/sonar-fix/.github/workflows/path2-claude-fix.yml@v1
     with:
       sonar-project-key: ${{ vars.SONAR_PROJECT_KEY }}
       sonar-org: ${{ vars.SONAR_ORG }}

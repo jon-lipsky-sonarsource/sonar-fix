@@ -3,12 +3,12 @@
 SonarQube Issue Triage Script
 ==============================
 Fetches issues from SonarQube for a given PR branch, categorizes them
-against the autofix configuration, and outputs structured JSON for
+against the fix configuration, and outputs structured JSON for
 downstream agent dispatch.
 
 Usage (in GitHub Actions):
     python3 .github/scripts/triage_sonar_issues.py \
-        --config .github/sonar-autofix-config.yml \
+        --config .github/sonar-fix-config.yml \
         --project-key my-org_my-repo \
         --branch feature/my-branch \
         --pr-number 42
@@ -31,7 +31,7 @@ import yaml
 
 
 def load_config(config_path: str) -> dict:
-    """Load and validate the autofix configuration YAML."""
+    """Load and validate the fix configuration YAML."""
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
@@ -183,7 +183,7 @@ def categorize_issue(issue: dict, config: dict) -> str:
     if matches_glob_list(filepath, config["paths"]["exclude"]):
         return "review_only"
 
-    # 4. If explicitly allowed, auto-fix
+    # 4. If explicitly allowed, fix
     if explicitly_allowed:
         return "auto_fix"
 
@@ -215,8 +215,8 @@ def format_issue(issue: dict) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Triage SonarQube issues for autofix")
-    parser.add_argument("--config", required=True, help="Path to sonar-autofix-config.yml")
+    parser = argparse.ArgumentParser(description="Triage SonarQube issues for fix")
+    parser.add_argument("--config", required=True, help="Path to sonar-fix-config.yml")
     parser.add_argument("--project-key", required=True, help="SonarQube project key")
     parser.add_argument("--branch", required=False, help="Branch name")
     parser.add_argument("--pr-number", required=False, help="PR number (for SonarCloud PR analysis)")
@@ -251,14 +251,14 @@ def main():
         elif category == "review_only":
             review_only_issues.append(formatted)
 
-    # Apply guardrail: cap auto-fix count
+    # Apply guardrail: cap fix count
     max_issues = config["guardrails"]["max_issues_per_run"]
     overflow = []
     if len(auto_fix_issues) > max_issues:
         overflow = auto_fix_issues[max_issues:]
         auto_fix_issues = auto_fix_issues[:max_issues]
         review_only_issues.extend(overflow)
-        print(f"Capped auto-fix at {max_issues} issues; {len(overflow)} moved to review-only")
+        print(f"Capped fix at {max_issues} issues; {len(overflow)} moved to review-only")
 
     # Build output
     output = {
@@ -294,12 +294,12 @@ def main():
     # Also print summary for the Actions log
     print("\n=== Triage Summary ===")
     print(f"Total issues:      {len(issues)}")
-    print(f"Auto-fix eligible: {len(auto_fix_issues)}")
+    print(f"Fix eligible: {len(auto_fix_issues)}")
     print(f"Review-only:       {len(review_only_issues)}")
     print(f"Agent:             {config['agent']}")
 
     if auto_fix_issues:
-        print("\nAuto-fix issues:")
+        print("\nFix issues:")
         for i in auto_fix_issues:
             print(f"  - [{i['severity']}] {i['rule']}: {i['message']} ({i['component']}:{i['line']})")
 

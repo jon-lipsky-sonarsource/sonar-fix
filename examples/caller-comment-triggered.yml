@@ -1,10 +1,10 @@
 # =============================================================================
-# Caller Workflow: SonarQube Auto-Fix — Comment Triggered
+# Caller Workflow: SonarQube Fix — Comment Triggered
 # =============================================================================
 # Fires on either of two PR comment events:
 #
 #   1. SonarCloud bot posts (or edits) its quality gate summary comment.
-#      Triggers an auto-fix when QG failed. After the agent's fix lands and
+#      Triggers a fix run when QG failed. After the agent's fix lands and
 #      SonarCloud re-analyzes, the bot edits its comment → this fires again
 #      → loop continues until QG passes or the loop guard trips.
 #
@@ -16,7 +16,7 @@
 # Why event-driven: every state transition (Sonar re-analysis, human ask)
 # surfaces as a comment event. No polling, no sleeps, no scheduled runs.
 #
-# Loop guard: counts prior auto-fix commits on the PR (by message prefix
+# Loop guard: counts prior fix commits on the PR (by message prefix
 # "fix: resolve SonarQube issues") and skips bot-triggered runs once the
 # count exceeds MAX_FIX_ATTEMPTS. The slash command always wins.
 #
@@ -25,7 +25,7 @@
 #     Administration → Pull Requests → Integration with GitHub → Enable summary
 #   - Repository secrets: SONAR_TOKEN, ANTHROPIC_API_KEY
 #   - Repository variables: SONAR_PROJECT_KEY, SONAR_ORG
-#   - .github/sonar-autofix-config.yml in this repo
+#   - .github/sonar-fix-config.yml in this repo
 #
 # Bot usernames by product:
 #   - SonarCloud (sonarcloud.io):     sonarcloud[bot]
@@ -33,7 +33,7 @@
 #   Adjust SONAR_BOT_LOGIN below to match your product.
 # =============================================================================
 
-name: "SonarQube Auto-Fix (Comment Triggered)"
+name: "SonarQube Fix (Comment Triggered)"
 
 on:
   # Fires when a comment is created OR edited on an issue or PR.
@@ -42,22 +42,22 @@ on:
   issue_comment:
     types: [created, edited]
 
-# Cancel any in-flight auto-fix run for this PR when a newer comment arrives.
+# Cancel any in-flight fix run for this PR when a newer comment arrives.
 # Without this, an agent fix push triggers a new SonarCloud comment edit while
 # the previous run is still going — overlapping commits make a mess.
 concurrency:
-  group: sonar-autofix-pr-${{ github.event.issue.number }}
+  group: sonar-fix-pr-${{ github.event.issue.number }}
   cancel-in-progress: true
 
 env:
   # Change this to match your SonarQube product's bot username.
   # Check a recent PR comment from SonarCloud to confirm the exact login.
   SONAR_BOT_LOGIN: "sonarcloud[bot]"
-  # Loop guard: max number of auto-fix commits the bot may add to a single PR
+  # Loop guard: max number of fix commits the bot may add to a single PR
   # before further bot-triggered runs are skipped. The /sonar-fix slash command
   # bypasses this cap (manual override). Bump if you want longer fix loops.
   MAX_FIX_ATTEMPTS: "3"
-  # Commit message prefix used to count prior auto-fix attempts on this PR.
+  # Commit message prefix used to count prior fix attempts on this PR.
   # Must match the commit message the agent is told to use in the reusable
   # workflow's prompt. Don't change one without changing the other.
   FIX_COMMIT_PREFIX: "fix: resolve SonarQube issues"
@@ -160,7 +160,7 @@ jobs:
 
             console.log(`Quality gate: ${failed ? 'FAILED' : passed ? 'PASSED' : 'UNKNOWN'}`);
 
-      - name: Count prior auto-fix attempts on this PR
+      - name: Count prior fix attempts on this PR
         id: count-attempts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -168,15 +168,15 @@ jobs:
         run: |
           # Counts commits on the PR whose message starts with FIX_COMMIT_PREFIX.
           # This prefix is mandated by the reusable workflow's agent prompt,
-          # so each prior auto-fix run shows up as exactly one matching commit.
+          # so each prior fix run shows up as exactly one matching commit.
           ATTEMPTS=$(gh api \
             "repos/${{ github.repository }}/pulls/${PR_NUMBER}/commits" \
             --paginate \
             --jq "[.[] | select(.commit.message | startswith(\"${FIX_COMMIT_PREFIX}\"))] | length")
-          echo "Prior auto-fix commits on PR #${PR_NUMBER}: ${ATTEMPTS}"
+          echo "Prior fix commits on PR #${PR_NUMBER}: ${ATTEMPTS}"
           echo "attempts=${ATTEMPTS}" >> "$GITHUB_OUTPUT"
 
-      - name: Decide whether to run auto-fix
+      - name: Decide whether to run fix
         id: decide
         run: |
           PR_STATE="${{ steps.pr-info.outputs.pr_state }}"
@@ -201,29 +201,29 @@ jobs:
 
           # sonar-bot path: respect QG status and the loop guard.
           if [ "$QG_FAILED" != "true" ]; then
-            echo "Quality gate passed (or status unknown). Skipping auto-fix."
+            echo "Quality gate passed (or status unknown). Skipping fix."
             echo "should_run=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           if [ "$ATTEMPTS" -gt "$MAX_FIX_ATTEMPTS" ]; then
-            echo "Loop guard tripped: ${ATTEMPTS} prior auto-fix commits on this PR (max ${MAX_FIX_ATTEMPTS})."
+            echo "Loop guard tripped: ${ATTEMPTS} prior fix commits on this PR (max ${MAX_FIX_ATTEMPTS})."
             echo "Comment '/sonar-fix' on the PR to override and force another attempt."
             echo "should_run=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "Quality gate failed and within attempt cap (${ATTEMPTS}/${MAX_FIX_ATTEMPTS}). Running auto-fix."
+          echo "Quality gate failed and within attempt cap (${ATTEMPTS}/${MAX_FIX_ATTEMPTS}). Running fix."
           echo "should_run=true" >> "$GITHUB_OUTPUT"
 
   # =========================================================================
-  # Job 2: Call the reusable auto-fix workflow
+  # Job 2: Call the reusable fix workflow
   # =========================================================================
-  autofix:
-    name: "Auto-Fix"
+  fix:
+    name: "Fix"
     needs: detect-and-resolve
     if: needs.detect-and-resolve.outputs.should_run == 'true'
-    uses: my-org/sonar-autofix/.github/workflows/path2-claude-autofix.yml@v1
+    uses: my-org/sonar-fix/.github/workflows/path2-claude-fix.yml@v1
     with:
       sonar-project-key: ${{ vars.SONAR_PROJECT_KEY }}
       sonar-org: ${{ vars.SONAR_ORG }}
@@ -231,6 +231,6 @@ jobs:
       pr-branch: ${{ needs.detect-and-resolve.outputs.pr_branch }}
       enable-agentic-analysis: true
       run-sonar-scan: false   # Analysis already ran — SonarCloud told us so!
-      # config-path: ".github/sonar-autofix-config.yml"
+      # config-path: ".github/sonar-fix-config.yml"
       # claude-model: "claude-sonnet-4-6"
     secrets: inherit

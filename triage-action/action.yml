@@ -1,13 +1,13 @@
 # =============================================================================
 # Composite Action: SonarQube Issue Triage
 # =============================================================================
-# Fetches SonarQube issues for a PR, categorizes them against the autofix
+# Fetches SonarQube issues for a PR, categorizes them against the fix
 # config, and outputs structured JSON for agent dispatch.
 #
 # Usage:
-#   - uses: my-org/sonar-autofix/.github/actions/triage@v1
+#   - uses: my-org/sonar-fix/.github/actions/triage@v1
 #     with:
-#       config-path: .github/sonar-autofix-config.yml
+#       config-path: .github/sonar-fix-config.yml
 #       project-key: my-org_my-repo
 #       branch: feature/my-branch
 #       pr-number: "42"
@@ -17,13 +17,13 @@
 # =============================================================================
 
 name: "SonarQube Issue Triage"
-description: "Fetch and categorize SonarQube issues for AI auto-fix dispatch"
+description: "Fetch and categorize SonarQube issues for AI fix dispatch"
 
 inputs:
   config-path:
-    description: "Path to sonar-autofix-config.yml in the calling repo"
+    description: "Path to sonar-fix-config.yml in the calling repo"
     required: true
-    default: ".github/sonar-autofix-config.yml"
+    default: ".github/sonar-fix-config.yml"
   project-key:
     description: "SonarQube project key"
     required: true
@@ -39,7 +39,7 @@ outputs:
     description: "Whether any issues were found"
     value: ${{ steps.triage.outputs.has_issues }}
   has_auto_fix:
-    description: "Whether any auto-fixable issues were found"
+    description: "Whether any fixable issues were found"
     value: ${{ steps.triage.outputs.has_auto_fix }}
   agent:
     description: "Which agent to use (claude, copilot, both)"

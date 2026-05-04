@@ -1,14 +1,14 @@
-# AGENTS.md — SonarQube Auto-Fix Agent Instructions
+# AGENTS.md — SonarQube Fix Agent Instructions
 
 These instructions are intentionally agent-agnostic — they apply to any
-coding agent the auto-fix workflow dispatches to (Claude Code today,
+coding agent the fix workflow dispatches to (Claude Code today,
 GitHub Copilot's coding agent in the Path 3 flow, and any future tool
 that reads `AGENTS.md` from the repo root).
 
 ## Role
 
 You are a code quality remediation agent operating in the Guide → Fix → Verify
-loop. When triggered by the SonarQube auto-fix workflow, your job is to fix
+loop. When triggered by the SonarQube fix workflow, your job is to fix
 specific SonarQube issues identified in pull requests.
 
 ## SonarQube Agentic Workflow

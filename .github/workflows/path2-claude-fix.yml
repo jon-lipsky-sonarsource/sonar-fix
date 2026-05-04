@@ -1,5 +1,5 @@
 # =============================================================================
-# Reusable Workflow: SonarQube + Claude Code Auto-Fix (Path 2)
+# Reusable Workflow: SonarQube + Claude Code Fix (Path 2)
 # =============================================================================
 # Central org-wide workflow. Individual repos call this with minimal config.
 #
@@ -13,8 +13,8 @@
 #
 # Called from a repo like:
 #   jobs:
-#     sonar-autofix:
-#       uses: my-org/sonar-autofix/.github/workflows/path2-claude-autofix.yml@v1
+#     sonar-fix:
+#       uses: my-org/sonar-fix/.github/workflows/path2-claude-fix.yml@v1
 #       with:
 #         sonar-project-key: my-org_my-repo
 #         pr-number: 42
@@ -22,7 +22,7 @@
 #       secrets: inherit
 # =============================================================================
 
-name: "Reusable: SonarQube + Claude Auto-Fix"
+name: "Reusable: SonarQube + Claude Fix"
 
 on:
   workflow_call:
@@ -45,10 +45,10 @@ on:
         type: string
         default: ""
       config-path:
-        description: "Path to sonar-autofix-config.yml (relative to calling repo)"
+        description: "Path to sonar-fix-config.yml (relative to calling repo)"
         required: false
         type: string
-        default: ".github/sonar-autofix-config.yml"
+        default: ".github/sonar-fix-config.yml"
       sonar-host-url:
         description: "SonarQube host URL"
         required: false
@@ -119,17 +119,17 @@ jobs:
         run: sleep 15
 
       # Checkout the central repo to get the composite action
-      - name: Checkout sonar-autofix repo
+      - name: Checkout sonar-fix repo
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/sonar-autofix
-          path: .sonar-autofix-action
+          repository: ${{ github.repository_owner }}/sonar-fix
+          path: .sonar-fix-action
           # Uses the default GITHUB_TOKEN — works for internal/public repos.
           # For private repos, you may need a PAT.
 
       - name: Triage issues
         id: triage
-        uses: ./.sonar-autofix-action/triage-action
+        uses: ./.sonar-fix-action/triage-action
         with:
           config-path: ${{ inputs.config-path }}
           project-key: ${{ inputs.sonar-project-key }}
@@ -168,7 +168,7 @@ jobs:
 
             let body = `## 🔍 SonarQube Issues — Requires Human Review\n\n`;
             body += `> These issues need manual attention per your `;
-            body += `[autofix config](${{ inputs.config-path }}).\n\n`;
+            body += `[fix config](${{ inputs.config-path }}).\n\n`;
 
             // Group by severity
             const grouped = {};
@@ -193,7 +193,7 @@ jobs:
 
             body += `---\n`;
             body += `*${summary.total_issues || '?'} total · `;
-            body += `${summary.auto_fix_count || 0} auto-fixing · `;
+            body += `${summary.auto_fix_count || 0} to fix · `;
             body += `${reviewOnly.length} for review*`;
 
             await github.rest.issues.createComment({
@@ -204,10 +204,10 @@ jobs:
             });
 
   # =========================================================================
-  # Job 3: Claude Code auto-fix
+  # Job 3: Claude Code fix
   # =========================================================================
-  claude-autofix:
-    name: "Claude Auto-Fix"
+  claude-fix:
+    name: "Claude Fix"
     needs: scan-and-triage
     if: |
       needs.scan-and-triage.outputs.has_auto_fix == 'true' &&

@@ -1,5 +1,5 @@
 # =============================================================================
-# Reusable Workflow: SonarQube + Copilot Coding Agent Auto-Fix (Path 3)
+# Reusable Workflow: SonarQube + Copilot Coding Agent Fix (Path 3)
 # =============================================================================
 # Central org-wide workflow. Individual repos call this with minimal config.
 #
@@ -11,14 +11,14 @@
 #
 # Called from a repo like:
 #   jobs:
-#     sonar-autofix:
-#       uses: my-org/sonar-autofix/.github/workflows/path3-copilot-autofix.yml@v1
+#     sonar-fix:
+#       uses: my-org/sonar-fix/.github/workflows/path3-copilot-fix.yml@v1
 #       with:
 #         sonar-project-key: my-org_my-repo
 #       secrets: inherit
 # =============================================================================
 
-name: "Reusable: SonarQube + Copilot Auto-Fix"
+name: "Reusable: SonarQube + Copilot Fix"
 
 on:
   workflow_call:
@@ -36,10 +36,10 @@ on:
         required: true
         type: string
       config-path:
-        description: "Path to sonar-autofix-config.yml (relative to calling repo)"
+        description: "Path to sonar-fix-config.yml (relative to calling repo)"
         required: false
         type: string
-        default: ".github/sonar-autofix-config.yml"
+        default: ".github/sonar-fix-config.yml"
       sonar-host-url:
         description: "SonarQube host URL"
         required: false
@@ -92,15 +92,15 @@ jobs:
         if: inputs.run-sonar-scan
         run: sleep 15
 
-      - name: Checkout sonar-autofix repo
+      - name: Checkout sonar-fix repo
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/sonar-autofix
-          path: .sonar-autofix-action
+          repository: ${{ github.repository_owner }}/sonar-fix
+          path: .sonar-fix-action
 
       - name: Triage issues
         id: triage
-        uses: ./.sonar-autofix-action/triage-action
+        uses: ./.sonar-fix-action/triage-action
         with:
           config-path: ${{ inputs.config-path }}
           project-key: ${{ inputs.sonar-project-key }}
@@ -150,8 +150,8 @@ jobs:
   # =========================================================================
   # Job 3: Dispatch to Copilot via @copilot PR comment
   # =========================================================================
-  copilot-autofix:
-    name: "Copilot Auto-Fix"
+  copilot-fix:
+    name: "Copilot Fix"
     needs: scan-and-triage
     if: |
       needs.scan-and-triage.outputs.has_auto_fix == 'true' &&

@@ -1,5 +1,5 @@
 # =============================================================================
-# SonarQube Auto-Fix Configuration
+# SonarQube Fix Configuration
 # =============================================================================
 # This file controls which SonarQube issues are automatically fixed by an AI
 # agent vs. which are flagged as PR comments for human review.
@@ -10,32 +10,32 @@
 # ---------------------------------------------------------------------------
 # Agent selection
 # ---------------------------------------------------------------------------
-# Which AI agent(s) to use for auto-fixing:
+# Which AI agent(s) to use for fixing:
 #   - "claude"   → Claude Code Action (runs in the Actions runner)
 #   - "copilot"  → GitHub Copilot coding agent (runs in Copilot's environment)
-#   - "both"     → Claude fixes auto-fixable issues; Copilot gets complex ones
+#   - "both"     → Claude fixes fixable issues; Copilot gets complex ones
 agent: claude
 
 # ---------------------------------------------------------------------------
-# Auto-fix filters
+# Fix filters
 # ---------------------------------------------------------------------------
 # Issues matching ALL of these criteria are eligible for automatic fixing.
 # The agent will attempt to fix them and push commits to the PR branch.
 auto_fix:
-  # Minimum severity to auto-fix. Options: BLOCKER, CRITICAL, MAJOR, MINOR, INFO
+  # Minimum severity to fix. Options: BLOCKER, CRITICAL, MAJOR, MINOR, INFO
   severities:
     - BLOCKER
     - CRITICAL
     - MAJOR
 
-  # Issue types to auto-fix. Options: BUG, CODE_SMELL, VULNERABILITY, SECURITY_HOTSPOT
+  # Issue types to fix. Options: BUG, CODE_SMELL, VULNERABILITY, SECURITY_HOTSPOT
   types:
     - BUG
     - CODE_SMELL
 
   # Rule-level overrides — these take precedence over severity/type filters
   rules:
-    # Always auto-fix these rules (even if severity/type wouldn't match)
+    # Always fix these rules (even if severity/type wouldn't match)
     allow:
       - "java:S1135"       # Track uses of "TODO" tags
       - "java:S1481"       # Unused local variables
@@ -51,7 +51,7 @@ auto_fix:
       - "typescript:S1854"  # Dead stores
       # Add more rules as confidence grows
 
-    # NEVER auto-fix these rules (even if severity/type would match).
+    # NEVER fix these rules (even if severity/type would match).
     # These require human judgment — security-sensitive, architectural, etc.
     deny:
       - "java:S2076"       # OS command injection
@@ -63,13 +63,13 @@ auto_fix:
       - "java:S5542"       # Encryption algorithm strength
       - "python:S5131"     # XSS
       - "python:S3649"     # SQL injection
-      # Catch-all: never auto-fix any security hotspot
+      # Catch-all: never fix any security hotspot
       - "SECURITY_HOTSPOT:*"
 
 # ---------------------------------------------------------------------------
 # Path exclusions
 # ---------------------------------------------------------------------------
-# Files matching these globs are NEVER auto-fixed, even if their issues
+# Files matching these globs are NEVER fixed, even if their issues
 # would otherwise qualify. The agent will still report them as PR comments.
 paths:
   exclude:
@@ -86,7 +86,7 @@ paths:
 # Review-only mode
 # ---------------------------------------------------------------------------
 # Issues matching these criteria are posted as informational PR comments
-# but are NOT auto-fixed. This is the "flag for human review" bucket.
+# but are NOT fixed. This is the "flag for human review" bucket.
 review_only:
   severities:
     - MINOR
@@ -100,7 +100,7 @@ review_only:
 # Safety guardrails
 # ---------------------------------------------------------------------------
 guardrails:
-  # Maximum number of issues to auto-fix in a single PR run.
+  # Maximum number of issues to fix in a single PR run.
   # Prevents runaway costs and overwhelming diffs.
   max_issues_per_run: 15
 
@@ -129,7 +129,7 @@ guardrails:
 # Notifications
 # ---------------------------------------------------------------------------
 notifications:
-  # Post a summary comment on the PR after the auto-fix run completes.
+  # Post a summary comment on the PR after the fix run completes.
   post_summary: true
 
   # If true, tag the PR author when issues are flagged for review-only.
