@@ -476,6 +476,13 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY || (inputs.anthropic-base-url != '' && 'dummy' || '') }}
+          # claude-code-action refuses to run when the workflow's actor is a
+          # bot unless the bot login is on this list. The SonarCloud bot
+          # comment that fires our auto-fix loop triggers as exactly that
+          # kind of bot-actor event, so we have to allow it explicitly.
+          # Reads from the same source as the if filter and concurrency
+          # group, so changing vars.SONAR_BOT_LOGIN once propagates here too.
+          allowed_bots: ${{ vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]' }}
 
           prompt: |
             Fix the SonarQube issues listed below in this pull request.
