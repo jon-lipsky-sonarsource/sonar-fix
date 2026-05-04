@@ -383,6 +383,23 @@ jobs:
       # Helicone), the Authorization header is either ignored by the gateway
       # or unused — the real auth lives in ANTHROPIC_CUSTOM_HEADERS or in
       # ANTHROPIC_API_KEY. The SDK requires *some* value, so we provide one.
+      # Catch a common setup mistake: proxy auth secrets are set, but the
+      # anthropic-base-url input is empty (typically because the user set
+      # ANTHROPIC_BASE_URL as a Secret rather than a Variable, so vars.X
+      # in the caller can't read it). Without this check the workflow
+      # silently treats the run as "direct Anthropic API" and the action's
+      # later validation produces a misleading error.
+      - name: Validate proxy config
+        if: inputs.anthropic-base-url == ''
+        env:
+          CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS }}
+        run: |
+          if [ -n "$CUSTOM_HEADERS" ]; then
+            echo "::error::ANTHROPIC_CUSTOM_HEADERS is set, but the anthropic-base-url input is empty (vars.ANTHROPIC_BASE_URL on the calling repo isn't set). This usually means ANTHROPIC_BASE_URL was created as a Secret instead of a Variable. URLs go in Variables — see README Phase 1.4."
+            exit 1
+          fi
+          echo "No proxy configured — using direct Anthropic API."
+
       - name: Configure Anthropic endpoint (proxy support)
         if: inputs.anthropic-base-url != ''
         env:
