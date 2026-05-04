@@ -85,6 +85,16 @@ on:
         required: false
         type: string
         default: ""
+      show-full-output:
+        description: >
+          When true, claude-code-action surfaces the agent's full tool calls
+          and reasoning in the run log. Defaults to false because tool output
+          may incidentally include source code that triggers GHA's secret
+          masking. Useful for debugging "agent ran cleanly but produced no
+          commit" cases.
+        required: false
+        type: boolean
+        default: false
     secrets:
       SONAR_TOKEN:
         description: "SonarQube user token"
@@ -470,8 +480,19 @@ jobs:
             ${{ toJSON(fromJSON(needs.scan-and-triage.outputs.issues_json).auto_fix) }}
             ```
 
+          # Tool names match the @anthropic-ai/claude-agent-sdk current API
+          # (Read/Write/Edit/Glob/Grep/Bash/MultiEdit). The earlier list used
+          # legacy names (View/GlobTool/GrepTool/BatchTool/Replace) that the
+          # current Claude Code build no longer exposes — the agent would hit
+          # permission denials and stall without ever editing files.
           claude_args: |
             --max-turns ${{ fromJSON(needs.scan-and-triage.outputs.issues_json).config.max_turns }}
             --model ${{ inputs.claude-model }}
             --mcp-config /tmp/sonar-mcp-config.json
-            --allowedTools "Edit,Replace,View,GlobTool,GrepTool,BatchTool,Bash(git:*),Bash(cat:*),Bash(head:*),Bash(tail:*),mcp__sonarqube__*"
+            --allowedTools "Read,Write,Edit,MultiEdit,Glob,Grep,Bash,mcp__sonarqube__*"
+          # Default false (claude-code-action default). Surfaces the agent's
+          # tool calls and reasoning in the run log when set true — useful for
+          # debugging "agent finished cleanly but didn't fix anything" cases
+          # like the one we hit on first run. Toggle by passing show-full-output
+          # from the caller (see workflow input below) or set to true here.
+          show_full_output: ${{ inputs.show-full-output }}

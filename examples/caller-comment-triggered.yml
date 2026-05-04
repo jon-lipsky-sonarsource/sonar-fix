@@ -253,6 +253,10 @@ jobs:
       # Optional: route Claude through an API gateway (Portkey, Helicone, etc.)
       # by setting a `vars.ANTHROPIC_BASE_URL` repo variable. Empty = direct.
       anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}
+      # Set `vars.SHOW_FULL_OUTPUT` to "true" temporarily when debugging an
+      # "agent ran cleanly but committed nothing" run. Surfaces tool calls
+      # and reasoning in the log. Default off — most runs don't need it.
+      show-full-output: ${{ vars.SHOW_FULL_OUTPUT == 'true' }}
       # config-path: ".github/sonar-fix-config.yml"
       # claude-model: "claude-sonnet-4-6"
     secrets: inherit
