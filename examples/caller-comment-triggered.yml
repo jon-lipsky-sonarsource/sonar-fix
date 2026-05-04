@@ -43,11 +43,32 @@ on:
   issue_comment:
     types: [created, edited]
 
-# Cancel any in-flight fix run for this PR when a newer comment arrives.
-# Without this, an agent fix push triggers a new SonarCloud comment edit while
-# the previous run is still going — overlapping commits make a mess.
+# Cancel in-flight fix runs only when a NEWER MATCHING comment arrives.
+#
+# Subtle: GHA evaluates concurrency at the workflow level, before the job-
+# level `if:` filter. If we used a single group for every issue_comment event
+# on the PR, an unrelated comment (a different bot, a human discussion, etc.)
+# would cancel an in-flight legitimate run before its filter could skip it.
+# We hit this on first install: SonarCloud actually posts TWO comments per
+# analysis (sonarqubecloud[bot] for QG status, sonarclouddev5[bot] for the
+# reviewer guide), three seconds apart. The reviewer-guide comment cancelled
+# the QG comment's fix run before it could start.
+#
+# Trick: matching events share group `sonar-fix-pr-{N}-match` so they cancel
+# each other (correctly — most recent QG state wins). Non-matching events
+# get a unique group keyed on comment id, so they don't cancel anything.
+# The match condition mirrors the job-level `if:` filter (minus the
+# author_association check, which is a string and would over-complicate this
+# expression — auth is still enforced at the job level).
 concurrency:
-  group: sonar-fix-pr-${{ github.event.issue.number }}
+  group: >-
+    ${{ format('sonar-fix-pr-{0}-{1}',
+        github.event.issue.number,
+        ((github.event.comment.user.login == (vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]')
+          && contains(github.event.comment.body, 'Quality Gate'))
+         || contains(github.event.comment.body, '/sonar-fix'))
+        && 'match'
+        || github.event.comment.id) }}
   cancel-in-progress: true
 
 # The reusable workflow needs to push commits (contents: write) and post
