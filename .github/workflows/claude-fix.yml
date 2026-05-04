@@ -388,11 +388,40 @@ jobs:
         env:
           BASE_URL: ${{ inputs.anthropic-base-url }}
           CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS }}
+          API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           echo "ANTHROPIC_BASE_URL=$BASE_URL"                                       >> "$GITHUB_ENV"
           echo "ANTHROPIC_AUTH_TOKEN=dummy"                                         >> "$GITHUB_ENV"
           [ -n "$CUSTOM_HEADERS" ] && echo "ANTHROPIC_CUSTOM_HEADERS=$CUSTOM_HEADERS" >> "$GITHUB_ENV"
-          : # always exit 0 even when CUSTOM_HEADERS is empty
+          # claude-code-action validates that ANTHROPIC_API_KEY is in env before
+          # invoking Claude Code, regardless of whether you authenticate via the
+          # action's `anthropic_api_key` input. When proxying through a virtual-
+          # key gateway (no real Anthropic key in secrets), set a placeholder
+          # here so the validation passes — the gateway ignores the x-api-key
+          # header anyway. When a real key IS set (Helicone-style observability
+          # proxy or any setup that forwards to Anthropic), keep it as-is.
+          [ -z "$API_KEY" ] && echo "ANTHROPIC_API_KEY=dummy" >> "$GITHUB_ENV"
+          : # always exit 0 even when CUSTOM_HEADERS / API_KEY are empty
+
+      # When Claude Code starts and can't validate auth against api.anthropic.com
+      # (which is exactly the case when ANTHROPIC_BASE_URL points at a proxy),
+      # it falls back to its first-run onboarding flow. In a non-TTY runner that
+      # surfaces as a generic failure with no useful output. Pre-creating
+      # ~/.claude.json with `hasCompletedOnboarding: true` skips the wizard and
+      # lets the CLI proceed straight to model calls. This is documented as a
+      # standard Portkey/proxy workaround.
+      - name: Skip Claude Code onboarding (proxy users)
+        if: inputs.anthropic-base-url != ''
+        run: |
+          if [ -f "$HOME/.claude.json" ]; then
+            # The action may have written its own config — merge our flag in.
+            tmp=$(mktemp)
+            jq '. + {hasCompletedOnboarding: true}' "$HOME/.claude.json" > "$tmp"
+            mv "$tmp" "$HOME/.claude.json"
+          else
+            printf '%s\n' '{"hasCompletedOnboarding": true}' > "$HOME/.claude.json"
+          fi
+          echo "Claude Code onboarding flag set"
 
       # anthropic_api_key:
       #   - If ANTHROPIC_API_KEY is set, use it (direct-Anthropic OR Helicone-
