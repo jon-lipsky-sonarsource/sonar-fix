@@ -168,12 +168,12 @@ Knobs at the top of `sonar-fix.yml`:
 
 ```yaml
 env:
-  SONAR_BOT_LOGIN: "sonarcloud[bot]"          # Bot username for your Sonar product
+  SONAR_BOT_LOGIN: ${{ vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]' }}
   MAX_FIX_ATTEMPTS: "3"                        # Loop guard
   FIX_COMMIT_PREFIX: "fix: resolve SonarQube issues"
 ```
 
-> **Bot username by product:** SonarCloud (`sonarcloud.io`) → `sonarcloud[bot]`. SonarQube Cloud (`sonarqube.com`) → `SonarQubeCloud[bot]`. Check a recent PR comment to confirm.
+> **Bot login.** The default `sonarqubecloud[bot]` matches the current SonarCloud / SonarQube Cloud bot. If your product uses a different name, set a repo variable `SONAR_BOT_LOGIN` (Settings → Secrets and variables → Actions → Variables) — both the job filter and the env reference it, so one variable change is enough. Confirm by inspecting the author of a recent SonarCloud comment on any PR.
 
 **Concurrency:** the workflow uses `concurrency: cancel-in-progress: true` keyed on PR number. If a new comment arrives while a previous run is going, the previous run is cancelled — newer Sonar state always wins.
 

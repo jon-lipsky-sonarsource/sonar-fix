@@ -127,7 +127,8 @@ and verify the categorization logic in isolation.
 
 Watch for:
 - Does the `issue_comment` filter correctly match the SonarCloud bot? Check
-  the exact bot username (`sonarcloud[bot]` vs `SonarQubeCloud[bot]`).
+  the exact bot username (default is `sonarqubecloud[bot]`; override via the
+  `SONAR_BOT_LOGIN` repo variable).
 - Does the quality gate pass/fail detection work? The comment body parsing
   looks for "Quality Gate passed/failed" and ✅/❌ emoji.
 - Does the triage job correctly fetch issues from the SonarQube API?
@@ -173,9 +174,10 @@ With `enable-agentic-analysis: true`:
 - [ ] Consider adding a "re-scan after fix" step that triggers a new SonarCloud
   analysis on the agent's commits, creating a feedback loop until the quality
   gate passes.
-- [ ] The `SONAR_BOT_LOGIN` env var in the comment-triggered caller is
-  hardcoded. Determine the correct bot username for your SonarQube product
-  and consider making it a workflow input.
+- [x] The `SONAR_BOT_LOGIN` env var in the comment-triggered caller now
+  defaults to `sonarqubecloud[bot]` and is overridable via the
+  `SONAR_BOT_LOGIN` repo variable. Both the job filter and the env read
+  from the same source.
 - [ ] Add observability: workflow annotations, summary output, or Slack
   notifications for fix results.
 - [ ] Consider making the triage script available as a standalone CLI tool

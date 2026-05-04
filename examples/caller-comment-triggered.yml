@@ -27,10 +27,11 @@
 #   - Repository variables: SONAR_PROJECT_KEY, SONAR_ORG
 #   - .github/sonar-fix-config.yml in this repo
 #
-# Bot usernames by product:
-#   - SonarCloud (sonarcloud.io):     sonarcloud[bot]
-#   - SonarQube Cloud (sonarqube.com): SonarQubeCloud[bot]
-#   Adjust SONAR_BOT_LOGIN below to match your product.
+# Bot login: defaults to `sonarqubecloud[bot]` (the current SonarCloud /
+# SonarQube Cloud bot login). Override by setting a `SONAR_BOT_LOGIN`
+# repository variable if your product uses a different name. Both the
+# job-level `if:` filter and the workflow-level `env` below read from
+# the variable with this default, so you set it once.
 # =============================================================================
 
 name: "SonarQube Fix (Comment Triggered)"
@@ -50,9 +51,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Change this to match your SonarQube product's bot username.
-  # Check a recent PR comment from SonarCloud to confirm the exact login.
-  SONAR_BOT_LOGIN: "sonarcloud[bot]"
+  # Bot login. Override by setting `SONAR_BOT_LOGIN` as a repo variable
+  # (Settings → Secrets and variables → Actions → Variables). The job-level
+  # `if:` filter below reads from the same source, so a single repo-variable
+  # change is enough — no need to edit this file.
+  SONAR_BOT_LOGIN: ${{ vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]' }}
   # Loop guard: max number of fix commits the bot may add to a single PR
   # before further bot-triggered runs are skipped. The /sonar-fix slash command
   # bypasses this cap (manual override). Bump if you want longer fix loops.
@@ -79,7 +82,7 @@ jobs:
     if: |
       github.event.issue.pull_request && (
         (
-          github.event.comment.user.login == 'sonarcloud[bot]' &&
+          github.event.comment.user.login == (vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]') &&
           contains(github.event.comment.body, 'Quality Gate')
         ) || (
           contains(github.event.comment.body, '/sonar-fix') &&
