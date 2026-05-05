@@ -1049,6 +1049,41 @@ jobs:
       # OpenAI endpoint step above), where codex CLI reads it via the
       # `env_key = "OPENAI_API_KEY"` line in our config.toml's gateway
       # provider block.
+
+      # Configure git user before Codex runs.
+      #
+      # Without this step, the LLM running inside Codex fabricates a
+      # placeholder identity (e.g. "Sonar Fix Agent
+      # <sonar-fix-agent@example.com>") when it needs to satisfy
+      # git's "Please tell me who you are" prompt at commit time —
+      # neither the codex-action source nor the codex-rs CLI nor our
+      # prompt sets one, so the model improvises. The improvised
+      # email lives on the IETF reserved-for-documentation domain
+      # (@example.com), which doesn't resolve to a real GitHub
+      # user/bot.
+      #
+      # Pushes via PAT only fire `pull_request: synchronize` for
+      # commits whose authors GitHub recognizes as real identities.
+      # The improvised identity fails that check silently, so the
+      # consumer's build workflow never re-runs after the agent's
+      # fix push, SonarCloud never re-analyzes, and the post-fix
+      # loop stalls with a stale issue list.
+      #
+      # Pre-configuring user.email/user.name here gives the model a
+      # ready-made identity it'll use without improvising. We pick
+      # github-actions[bot] because it's a real, GitHub-system-managed
+      # bot whose noreply email format is well-known and universally
+      # recognized. (Numeric prefix 41898282 is github-actions[bot]'s
+      # user ID.)
+      #
+      # Claude and Copilot don't need this step — their actions
+      # explicitly configure their own bot identities (`claude[bot]`,
+      # `copilot-swe-agent[bot]`) before any commit.
+      - name: Configure git user for the agent's commits
+        run: |
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+
       - name: Run Codex to fix issues
         uses: openai/codex-action@v1
         with:
