@@ -55,10 +55,11 @@ Then go to **Settings → Actions → General** on the new repo and set "Access"
 
 | Secret              | Required By | Description                                |
 |---------------------|-------------|--------------------------------------------|
-| `SONAR_TOKEN`       | Both        | SonarQube user token                       |
+| `SONAR_TOKEN`       | Either path | SonarQube user token. Either this **or** `COPILOT_MCP_SONAR_TOKEN` (below) must be set. The workflow uses `SONAR_TOKEN` first and falls back to `COPILOT_MCP_SONAR_TOKEN` when it's empty. |
+| `COPILOT_MCP_SONAR_TOKEN` | Copilot | Same value as `SONAR_TOKEN`. Required by GitHub's Copilot platform — Copilot's MCP config can only see secrets prefixed `COPILOT_MCP_`. **If you're running Copilot, you already need this; you can skip `SONAR_TOKEN` entirely.** Claude-only setups don't need this one. |
 | `ANTHROPIC_API_KEY` | Claude      | Anthropic API key. Skip if you only ever route through a virtual-key gateway like Portkey (see 1.5) — the workflow uses a placeholder. Set to your real key for direct Anthropic or for Helicone-style observability proxies that forward to Anthropic. |
 | `COPILOT_PAT`       | Copilot     | GitHub PAT (classic, `repo` scope) from a Copilot subscriber |
-| `AGENT_PUSH_TOKEN`  | Both (for loop) | GitHub PAT used to push the agent's commits. **Required for the auto-fix loop to keep iterating.** Pushes via PAT trigger your build/Sonar workflow on the new commit, which posts a fresh SonarCloud bot comment, which re-fires sonar-fix.yml. Without this secret, pushes use the default `GITHUB_TOKEN` — the commit lands on the PR but downstream workflows don't auto-run (GHA's recursive-trigger protection), so the loop stalls after one fix unless someone re-comments `/sonar-fix`. Classic PAT with `repo` scope, or fine-grained PAT with `Contents: write` + `Pull requests: write`. |
+| `AGENT_PUSH_TOKEN`  | Claude (for loop) | GitHub PAT used to push the agent's commits. **Required for the Claude auto-fix loop to keep iterating.** Pushes via PAT trigger your build/Sonar workflow on the new commit, which posts a fresh SonarCloud bot comment, which re-fires sonar-fix. Without this secret, pushes use the default `GITHUB_TOKEN` — the commit lands on the PR but downstream workflows don't auto-run (GHA's recursive-trigger protection), so the loop stalls after one fix unless someone re-comments `/sonar-fix`. Classic PAT with `repo` scope, or fine-grained PAT with `Contents: write` + `Pull requests: write`. Not used by the Copilot path (Copilot's App-identity pushes already trigger downstream workflows). |
 
 ### 1.3 Add org-level variables
 
@@ -67,7 +68,7 @@ Same screen → **Variables** tab → **New organization variable**:
 | Variable            | Description                             |
 |---------------------|-----------------------------------------|
 | `SONAR_HOST_URL`    | e.g. `https://sonarcloud.io`            |
-| `SONAR_ORG`         | SonarQube Cloud org key (if applicable) |
+| `SONAR_ORG`         | SonarQube Cloud org key. Either this or `COPILOT_MCP_SONAR_ORG` (a Copilot path's MCP often needs both, sharing the same value). The example callers fall back to `vars.COPILOT_MCP_SONAR_ORG` when `vars.SONAR_ORG` is empty — if you're running Copilot, just set the `COPILOT_MCP_SONAR_ORG` variable and skip this one. |
 
 ### 1.4 Install the Claude Code GitHub App (Claude path only)
 

@@ -103,8 +103,21 @@ on:
         default: false
     secrets:
       SONAR_TOKEN:
-        description: "SonarQube user token"
-        required: true
+        description: >
+          SonarQube user token. EITHER this OR `COPILOT_MCP_SONAR_TOKEN`
+          must be set — the workflow falls back to the latter when the
+          former is empty, so Copilot users (who already need the
+          COPILOT_MCP_-prefixed name for Copilot's MCP config) don't have
+          to set the same value twice. Claude-only users typically just
+          set this one.
+        required: false
+      COPILOT_MCP_SONAR_TOKEN:
+        description: >
+          SonarQube user token in the COPILOT_MCP_ namespace. Required by
+          Copilot's MCP server config (GitHub limits Copilot's MCP to
+          secrets with this prefix). When set, also serves as the fallback
+          for SONAR_TOKEN — so a single secret covers both paths.
+        required: false
       ANTHROPIC_API_KEY:
         description: >
           Anthropic API key. Required when calling Anthropic directly. When
@@ -178,7 +191,7 @@ jobs:
         if: inputs.run-sonar-scan
         uses: SonarSource/sonarqube-scan-action@v5
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN || secrets.COPILOT_MCP_SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
 
       - name: Wait for analysis
@@ -218,7 +231,7 @@ jobs:
           branch: ${{ inputs.pr-branch }}
           pr-number: ${{ inputs.pr-number }}
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN || secrets.COPILOT_MCP_SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
 
   # =========================================================================
@@ -370,7 +383,7 @@ jobs:
 
       - name: Create MCP config
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN || secrets.COPILOT_MCP_SONAR_TOKEN }}
           SONAR_ORG: ${{ inputs.sonar-org }}
           SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
           SONAR_PROJECT_KEY: ${{ inputs.sonar-project-key }}
