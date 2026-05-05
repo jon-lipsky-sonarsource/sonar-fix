@@ -1,20 +1,31 @@
 # =============================================================================
 # Caller Workflow: SonarQube Fix — Comment Triggered
 # =============================================================================
-# Fires on either of two PR comment events:
+# Fires on any of three PR comment events:
 #
-#   1. SonarCloud bot posts (or edits) its quality gate summary comment.
-#      Triggers a fix run when QG failed. After the agent's fix lands and
-#      SonarCloud re-analyzes, the bot edits its comment → this fires again
-#      → loop continues until QG passes or the loop guard trips.
+#   1. SonarCloud's QG bot (`sonarqubecloud[bot]`) posts or edits its
+#      quality gate summary comment. Fires a fix run when QG failed.
+#      Note: this bot only EDITS the comment when QG status changes —
+#      a partial fix that leaves QG still-failed produces no edit, so
+#      we also listen for #2 below to keep the loop alive.
 #
-#   2. A repo collaborator comments "/sonar-fix" on a PR.
+#   2. SonarCloud's reviewer-guide bot (`sonarclouddev<N>[bot]`) posts
+#      a fresh comment on every analysis, regardless of QG state.
+#      That makes it the reliable signal that "SonarCloud has new
+#      data" — particularly useful after a partial fix where the QG
+#      bot stays silent. Each post triggers an updated triage report;
+#      the agent dispatch downstream is gated on `has_auto_fix`, so
+#      "all clear" runs are cheap.
+#
+#   3. A repo collaborator comments "/sonar-fix" on a PR.
 #      Manual override — runs regardless of QG status, bypasses loop guard.
-#      Useful when the bot is quiet or when piloting the flow before
+#      Useful when the bots are quiet or when piloting the flow before
 #      enabling full automation.
 #
 # Why event-driven: every state transition (Sonar re-analysis, human ask)
 # surfaces as a comment event. No polling, no sleeps, no scheduled runs.
+# Crucially this also works for SonarCloud Autoscan repos that don't
+# have a CI build workflow we could otherwise listen to via workflow_run.
 #
 # Loop guard: counts prior fix commits on the PR (by message prefix
 # "fix: resolve SonarQube issues") and skips bot-triggered runs once the
@@ -46,11 +57,17 @@
 #   - (Optional) vars.OPENAI_BASE_URL + secrets.OPENAI_CUSTOM_HEADERS
 #     when routing through Portkey/Helicone/internal proxy
 #
-# Bot login: defaults to `sonarqubecloud[bot]` (the current SonarCloud /
-# SonarQube Cloud bot login). Override by setting a `SONAR_BOT_LOGIN`
-# repository variable if your product uses a different name. Both the
-# job-level `if:` filter and the workflow-level `env` below read from
-# the variable with this default, so you set it once.
+# Bot logins — SonarCloud has two bots, both involved in our trigger flow:
+#   - QG bot: `sonarqubecloud[bot]` by default. Configurable via the
+#     `SONAR_BOT_LOGIN` repo variable (Settings → Secrets and variables
+#     → Actions → Variables) — set this if your product uses a different
+#     name (older `sonarcloud[bot]`, on-prem variant, etc.). Both the
+#     job-level `if:` filter and the workflow-level `env` below read
+#     from the same variable.
+#   - Reviewer-guide bot: `sonarclouddev<N>[bot]` (the trailing digit
+#     is a SonarCloud-side instance identifier; we match by `startsWith
+#     'sonarclouddev'` so any number works). Hard-coded — if SonarCloud
+#     ever changes the prefix this needs a one-line edit in the filter.
 # =============================================================================
 
 name: "SonarQube Fix (Comment Triggered)"
@@ -65,26 +82,35 @@ on:
 # Cancel in-flight fix runs only when a NEWER MATCHING comment arrives.
 #
 # Subtle: GHA evaluates concurrency at the workflow level, before the job-
-# level `if:` filter. If we used a single group for every issue_comment event
-# on the PR, an unrelated comment (a different bot, a human discussion, etc.)
-# would cancel an in-flight legitimate run before its filter could skip it.
-# We hit this on first install: SonarCloud actually posts TWO comments per
-# analysis (sonarqubecloud[bot] for QG status, sonarclouddev5[bot] for the
-# reviewer guide), three seconds apart. The reviewer-guide comment cancelled
-# the QG comment's fix run before it could start.
+# level `if:` filter. If we used a single group for every issue_comment
+# event on the PR, an unrelated comment (a human discussion, an unrelated
+# bot, etc.) would cancel an in-flight legitimate run before its filter
+# could skip it.
 #
-# Trick: matching events share group `sonar-fix-pr-{N}-match` so they cancel
-# each other (correctly — most recent QG state wins). Non-matching events
-# get a unique group keyed on comment id, so they don't cancel anything.
+# Trick: ALL events from any of our trusted trigger sources (the QG bot,
+# the reviewer-guide bot, or a /sonar-fix slash command) share the
+# `sonar-fix-pr-{N}-match` group, so they cancel each other and the
+# most recent fresh signal wins. Non-matching events fall into a
+# unique group keyed on comment id, so they don't cancel anything.
+#
+# Note on the dual-bot interaction: SonarCloud posts two comments per
+# analysis (QG bot first, reviewer-guide bot ~3 seconds later). Both
+# end up in the match group on purpose — they reflect the same
+# analysis, so the second one cancelling the first is fine; either
+# triggers the same downstream triage.
+#
 # The match condition mirrors the job-level `if:` filter (minus the
-# author_association check, which is a string and would over-complicate this
-# expression — auth is still enforced at the job level).
+# author_association check on /sonar-fix, which is a string and would
+# over-complicate this expression — auth is still enforced at the
+# job level).
 concurrency:
   group: >-
     ${{ format('sonar-fix-pr-{0}-{1}',
         github.event.issue.number,
         ((github.event.comment.user.login == (vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]')
           && contains(github.event.comment.body, 'Quality Gate'))
+         || (startsWith(github.event.comment.user.login, 'sonarclouddev')
+             && contains(github.event.comment.body, 'SonarQube'))
          || contains(github.event.comment.body, '/sonar-fix'))
         && 'match'
         || github.event.comment.id) }}
@@ -129,17 +155,26 @@ jobs:
     name: "Detect Trigger & Resolve PR"
     runs-on: ubuntu-latest
 
-    # Run if EITHER:
-    #   A) The comment is on a PR, from the SonarCloud bot, and mentions Quality Gate
-    #   B) The comment is on a PR, from a user with write access, and contains "/sonar-fix"
+    # Run if ANY of:
+    #   A) Comment is on a PR, from the SonarCloud QG bot, mentions
+    #      "Quality Gate" → triggered by a QG status update.
+    #   B) Comment is on a PR, from the SonarCloud reviewer-guide bot
+    #      (`sonarclouddev<N>[bot]`), contains "SonarQube" → fresh
+    #      analysis just landed, regardless of whether QG flipped.
+    #   C) Comment is on a PR, from a user with write access, contains
+    #      "/sonar-fix" → manual override.
     #
-    # The author_association check on (B) is critical for public repos: without it,
-    # any drive-by commenter could trigger billable agent runs on your PRs.
+    # The author_association check on (C) is critical for public repos:
+    # without it, any drive-by commenter could trigger billable agent
+    # runs on your PRs.
     if: |
       github.event.issue.pull_request && (
         (
           github.event.comment.user.login == (vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]') &&
           contains(github.event.comment.body, 'Quality Gate')
+        ) || (
+          startsWith(github.event.comment.user.login, 'sonarclouddev') &&
+          contains(github.event.comment.body, 'SonarQube')
         ) || (
           contains(github.event.comment.body, '/sonar-fix') &&
           (
@@ -178,7 +213,7 @@ jobs:
 
             console.log(`PR #${pr.number} — branch: ${pr.head.ref}, state: ${pr.state}`);
 
-      - name: Classify trigger (sonar-bot vs slash-command)
+      - name: Classify trigger (qg-bot / reviewer-guide / slash-command)
         id: classify
         # Pass user-controlled fields through env, never interpolate them into
         # the script body — a comment containing shell metacharacters or a
@@ -188,8 +223,11 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
           if [ "$COMMENT_AUTHOR" = "$SONAR_BOT_LOGIN" ]; then
-            echo "Trigger: sonar-bot comment"
-            echo "trigger=sonar-bot" >> "$GITHUB_OUTPUT"
+            echo "Trigger: QG bot comment from $COMMENT_AUTHOR"
+            echo "trigger=qg-bot" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$COMMENT_AUTHOR" | grep -qE '^sonarclouddev'; then
+            echo "Trigger: reviewer-guide bot comment from $COMMENT_AUTHOR"
+            echo "trigger=reviewer-guide" >> "$GITHUB_OUTPUT"
           elif printf '%s' "$COMMENT_BODY" | grep -qF "/sonar-fix"; then
             echo "Trigger: /sonar-fix slash command from $COMMENT_AUTHOR"
             echo "trigger=slash-command" >> "$GITHUB_OUTPUT"
@@ -201,7 +239,10 @@ jobs:
 
       - name: Parse quality gate status from comment
         id: parse-comment
-        if: steps.classify.outputs.trigger == 'sonar-bot'
+        # Only the QG bot's body carries pass/fail wording. The
+        # reviewer-guide bot's comment doesn't include QG status, and
+        # /sonar-fix bypasses the QG check entirely.
+        if: steps.classify.outputs.trigger == 'qg-bot'
         uses: actions/github-script@v7
         with:
           script: |
@@ -258,7 +299,28 @@ jobs:
             exit 0
           fi
 
-          # sonar-bot path: respect QG status and the loop guard.
+          if [ "$TRIGGER" = "reviewer-guide" ]; then
+            # The reviewer-guide bot fires on every analysis, regardless
+            # of QG state. Skip the QG check and run triage so the user
+            # gets an updated post-fix state report. The agent dispatch
+            # downstream is gated on has_auto_fix in the reusable
+            # workflow, so an "all clear" run cheaply produces an
+            # updated triage comment and exits.
+            if [ "$ATTEMPTS" -gt "$MAX_FIX_ATTEMPTS" ]; then
+              echo "Loop guard tripped: ${ATTEMPTS} prior fix commits on this PR (max ${MAX_FIX_ATTEMPTS})."
+              echo "Triage comment will still be posted, but agent dispatch will be skipped — comment '/sonar-fix' to override."
+              # Falling through with should_run=true is fine: the
+              # reusable workflow's per-job filters skip the agents.
+              # We just want the triage comment to land.
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Reviewer-guide trigger; running triage to refresh remaining-issues report."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # qg-bot path: respect QG status and the loop guard.
           if [ "$QG_FAILED" != "true" ]; then
             echo "Quality gate passed (or status unknown). Skipping fix."
             echo "should_run=false" >> "$GITHUB_OUTPUT"
