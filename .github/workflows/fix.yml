@@ -798,10 +798,17 @@ jobs:
       # before the action runs. The codex-action accepts a `codex-home`
       # input that points it at this directory; the CLI then reads
       # $CODEX_HOME/config.toml for MCP servers and provider settings.
+      #
+      # Place under $RUNNER_TEMP, NOT /tmp. The codex CLI refuses to
+      # install PATH helper binaries when its home is under /tmp as a
+      # security precaution and emits "Refusing to create helper
+      # binaries under temporary dir /tmp" — degrading some
+      # functionality silently. $RUNNER_TEMP is /home/runner/work/_temp
+      # on hosted Linux runners, which the CLI accepts.
       - name: Resolve Codex home
         id: resolve-codex-home
         run: |
-          DIR="$(mktemp -d -t codex-home.XXXXXX)"
+          DIR="$(mktemp -d "$RUNNER_TEMP/codex-home.XXXXXX")"
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
           echo "Codex home: $DIR"
 
@@ -835,11 +842,42 @@ jobs:
           WORKSPACE_DIR="$(pwd)"
           CONFIG="$CODEX_HOME/config.toml"
 
-          # Branch on SonarQube Cloud (org set) vs Server (no org). The
-          # difference is whether SONARQUBE_ORG / SONARQUBE_ADVANCED_ANALYSIS_ENABLED
-          # are forwarded into the MCP server's container env.
+          # TOML structure rule: bare top-level keys (model_provider,
+          # approval_policy, etc.) MUST be written before any [table]
+          # opens. Once a table starts, all subsequent assignments are
+          # scoped to it until another table or the file ends. So the
+          # order in this step is:
+          #   1) Top-level scalars first
+          #   2) [mcp_servers.sonarqube] + .env subtable
+          #   3) [model_providers.gateway] + .http_headers subtable (proxy only)
+          # Reversing 1 and 2 silently nests model_provider under
+          # mcp_servers.sonarqube.env, which Codex ignores — a latent bug
+          # that masked itself behind earlier failures.
+
+          # 1. Top-level scalars
+          {
+            # Set approval_policy to "never" so codex exec never pauses
+            # for human approval in CI. Pairs with sandbox: danger-full-access
+            # on the action invocation below — together they're the
+            # equivalent of --yolo, which is the right shape for an
+            # ephemeral CI runner that's already wrapped in bubblewrap +
+            # drop-sudo by the action itself.
+            echo 'approval_policy = "never"'
+            # When proxying, override the default provider so codex CLI
+            # bypasses the action's local Responses API proxy and talks
+            # directly to the gateway defined further down in this file.
+            if [ -n "$OPENAI_BASE_URL" ]; then
+              echo 'model_provider = "gateway"'
+            fi
+            echo ''
+          } > "$CONFIG"
+
+          # 2. [mcp_servers.sonarqube] table — branch on Cloud (org set)
+          # vs Server (no org). Difference: whether SONARQUBE_ORG and
+          # SONARQUBE_ADVANCED_ANALYSIS_ENABLED are forwarded into the
+          # MCP server's container env.
           if [ -n "$SONAR_ORG" ]; then
-            cat > "$CONFIG" << TOMLEOF
+            cat >> "$CONFIG" << TOMLEOF
           [mcp_servers.sonarqube]
           command = "docker"
           args = [
@@ -864,7 +902,7 @@ jobs:
           SONARQUBE_ADVANCED_ANALYSIS_ENABLED = "${ADVANCED_FLAG}"
           TOMLEOF
           else
-            cat > "$CONFIG" << TOMLEOF
+            cat >> "$CONFIG" << TOMLEOF
           [mcp_servers.sonarqube]
           command = "docker"
           args = [
@@ -886,19 +924,13 @@ jobs:
           TOMLEOF
           fi
 
-          # Proxy/gateway support — only when openai-base-url is set. We
-          # define a custom model_provider that points at the gateway and
-          # override `model_provider` at the top level so Codex bypasses
-          # its built-in `openai` provider entirely. This works for both
-          # virtual-key gateways (Portkey, with auth via http_headers)
-          # and observability proxies (Helicone, with bearer auth via
-          # OPENAI_API_KEY env var). The custom provider id is `gateway`
-          # because `openai` is reserved for the built-in.
+          # 3. [model_providers.gateway] — only when proxying. The
+          # top-level model_provider = "gateway" key (written above)
+          # makes codex CLI consult this entry instead of the built-in
+          # openai provider.
           if [ -n "$OPENAI_BASE_URL" ]; then
             echo "Routing Codex through proxy: $OPENAI_BASE_URL"
             cat >> "$CONFIG" << TOMLEOF
-
-          model_provider = "gateway"
 
           [model_providers.gateway]
           name = "OpenAI proxy"
@@ -1007,7 +1039,19 @@ jobs:
           openai-api-key: ${{ inputs.openai-base-url != '' && 'dummy' || secrets.OPENAI_API_KEY }}
           codex-home: ${{ steps.resolve-codex-home.outputs.dir }}
           model: ${{ inputs.codex-model }}
-          sandbox: workspace-write
+          # Effectively yolo mode for the inner sandbox: combined with
+          # approval_policy = "never" in config.toml above, this is the
+          # equivalent of `codex exec --yolo`. We want this in CI because:
+          #   1) The action already runs codex inside bubblewrap with
+          #      sudo dropped (safety-strategy: drop-sudo below) — so
+          #      codex's internal sandbox is a redundant inner layer.
+          #   2) The MCP server is launched as a `docker run` subprocess
+          #      from inside codex; workspace-write may interfere with
+          #      that depending on bubblewrap config.
+          #   3) The runner is ephemeral — blast radius is one job.
+          # If you ever run codex-fix outside an ephemeral, bubblewrap'd
+          # CI runner, reconsider this knob.
+          sandbox: danger-full-access
           safety-strategy: drop-sudo
           # Mirrors claude-code-action's allowed_bots: lets the
           # SonarCloud bot's PR comment trigger this action without
@@ -1017,11 +1061,16 @@ jobs:
           allow-bots: 'true'
           allow-bot-users: ${{ vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]' }}
           # No --max-turns equivalent in codex exec; runaway protection
-          # comes from --ask-for-approval=never (no human gate to
-          # accidentally hang on) plus the natural completion of the
-          # task. If cost becomes an issue, switch to a config-toml
-          # `model_auto_compact_token_limit` setting in a follow-up.
-          codex-args: '["--ask-for-approval", "never"]'
+          # comes from approval_policy = "never" in config.toml (no
+          # human gate to accidentally hang on) plus the natural
+          # completion of the task. If cost becomes an issue, switch to
+          # a config-toml `model_auto_compact_token_limit` setting.
+          # codex-args intentionally omitted — the action's built-in
+          # invocation already passes --skip-git-repo-check, --cd,
+          # --output-last-message, and --sandbox. Earlier we passed
+          # `--ask-for-approval never`, but that's a global flag (not
+          # accepted on `codex exec`); approval policy now lives in
+          # config.toml instead.
           prompt: |
             Fix the SonarQube issues listed below in this pull request.
 
