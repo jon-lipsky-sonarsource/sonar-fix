@@ -1057,32 +1057,65 @@ jobs:
       # <sonar-fix-agent@example.com>") when it needs to satisfy
       # git's "Please tell me who you are" prompt at commit time —
       # neither the codex-action source nor the codex-rs CLI nor our
-      # prompt sets one, so the model improvises. The improvised
-      # email lives on the IETF reserved-for-documentation domain
-      # (@example.com), which doesn't resolve to a real GitHub
-      # user/bot.
+      # prompt sets one, so the model improvises. That breaks the
+      # post-fix loop because GitHub silently drops `pull_request:
+      # synchronize` events for commits whose authors don't resolve
+      # to a recognized GitHub identity.
       #
-      # Pushes via PAT only fire `pull_request: synchronize` for
-      # commits whose authors GitHub recognizes as real identities.
-      # The improvised identity fails that check silently, so the
-      # consumer's build workflow never re-runs after the agent's
-      # fix push, SonarCloud never re-analyzes, and the post-fix
-      # loop stalls with a stale issue list.
+      # Identity choice matters more than I first thought:
+      #   - claude[bot], copilot-swe-agent[bot] (third-party Apps): ✓
+      #     pull_request:synchronize fires, downstream builds run.
+      #   - github-actions[bot] (the GITHUB_TOKEN identity): ✗
+      #     GitHub's recursive-trigger protection suppresses
+      #     downstream workflows for ANY commit authored by this
+      #     bot, regardless of how it's pushed (PAT or GITHUB_TOKEN).
       #
-      # Pre-configuring user.email/user.name here gives the model a
-      # ready-made identity it'll use without improvising. We pick
-      # github-actions[bot] because it's a real, GitHub-system-managed
-      # bot whose noreply email format is well-known and universally
-      # recognized. (Numeric prefix 41898282 is github-actions[bot]'s
-      # user ID.)
+      # So we use the PAT owner's identity instead of
+      # github-actions[bot]. We discover the owner dynamically by
+      # querying /user with the PAT itself — that way this works for
+      # any consumer's PAT setup without per-repo configuration. The
+      # noreply email format `<id>+<login>@users.noreply.github.com`
+      # is the canonical attribution form that GitHub recognizes.
+      #
+      # When AGENT_PUSH_TOKEN isn't set, we fall back to
+      # github-actions[bot]. The post-fix loop won't iterate in that
+      # case anyway (the existing GITHUB_TOKEN fallback in the push
+      # step doesn't trigger downstream workflows either), so the
+      # identity choice doesn't matter for the fallback — but giving
+      # the model a ready-made identity still prevents it from
+      # improvising the broken @example.com one.
       #
       # Claude and Copilot don't need this step — their actions
       # explicitly configure their own bot identities (`claude[bot]`,
       # `copilot-swe-agent[bot]`) before any commit.
       - name: Configure git user for the agent's commits
+        env:
+          PUSH_TOKEN: ${{ secrets.AGENT_PUSH_TOKEN }}
+          GH_API: ${{ github.api_url }}
         run: |
+          if [ -n "$PUSH_TOKEN" ]; then
+            USER_JSON=$(curl -sf \
+              -H "Authorization: token $PUSH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "${GH_API}/user" || true)
+          fi
+          if [ -n "${USER_JSON:-}" ]; then
+            LOGIN=$(printf '%s' "$USER_JSON" | jq -r '.login // empty')
+            ID=$(printf '%s' "$USER_JSON" | jq -r '.id // empty')
+            if [ -n "$LOGIN" ] && [ -n "$ID" ]; then
+              EMAIL="${ID}+${LOGIN}@users.noreply.github.com"
+              git config --global user.email "$EMAIL"
+              git config --global user.name "$LOGIN"
+              echo "git user set to AGENT_PUSH_TOKEN owner: $LOGIN <$EMAIL>"
+              exit 0
+            fi
+          fi
+          # Fallback — AGENT_PUSH_TOKEN not set or /user lookup failed.
+          # github-actions[bot] won't trigger the post-fix loop, but
+          # it still beats the LLM's improvised @example.com identity.
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
+          echo "::warning::AGENT_PUSH_TOKEN not set or unreachable — falling back to github-actions[bot] commit identity. The post-fix loop won't iterate; comment '/sonar-fix' on the PR to re-trigger manually after each fix push."
 
       - name: Run Codex to fix issues
         uses: openai/codex-action@v1
