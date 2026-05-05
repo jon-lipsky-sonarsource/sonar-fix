@@ -30,12 +30,47 @@ import urllib.error
 import yaml
 
 
-def load_config(config_path: str) -> dict:
-    """Load and validate the fix configuration YAML."""
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
+def deep_merge(base: dict, override: dict) -> dict:
+    """
+    Recursively merge `override` into `base`. Nested dicts are merged
+    key-by-key; everything else (lists, scalars) is replaced wholesale
+    by the override. So a consumer can override `auto_fix.severities`
+    without having to also redeclare `auto_fix.types`, but if they do
+    set `severities`, their list replaces the base's list (rather than
+    being appended to it).
+    """
+    result = dict(base)
+    for key, value in (override or {}).items():
+        if (
+            key in result
+            and isinstance(result[key], dict)
+            and isinstance(value, dict)
+        ):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
 
-    # Provide sensible defaults for missing keys
+
+def load_config(config_path: str, overrides_path: str | None = None) -> dict:
+    """
+    Load fix configuration. `config_path` is the base (typically the
+    central default at config/default.yml in the sonar-fix repo);
+    `overrides_path`, if provided AND the file exists, is the consumer
+    repo's per-repo override deep-merged on top.
+    """
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f) or {}
+
+    if overrides_path and os.path.exists(overrides_path):
+        with open(overrides_path, "r") as f:
+            overrides = yaml.safe_load(f) or {}
+        config = deep_merge(config, overrides)
+
+    # Backstop defaults for keys still missing after the merge. These
+    # only fire if NEITHER the base nor the override declare the key,
+    # which shouldn't happen with the shipped central default — kept
+    # as a safety net so a malformed central config doesn't crash.
     config.setdefault("agent", "claude")
     config.setdefault("auto_fix", {})
     config["auto_fix"].setdefault("severities", ["BLOCKER", "CRITICAL"])
@@ -216,7 +251,15 @@ def format_issue(issue: dict) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="Triage SonarQube issues for fix")
-    parser.add_argument("--config", required=True, help="Path to sonar-fix-config.yml")
+    parser.add_argument("--config", required=True, help="Path to base sonar-fix-config.yml (typically the central default)")
+    parser.add_argument(
+        "--overrides",
+        required=False,
+        default="",
+        help="Optional path to a per-repo sonar-fix-config.yml whose keys "
+             "are deep-merged on top of --config. Missing/non-existent path "
+             "is treated as 'no overrides'.",
+    )
     parser.add_argument("--project-key", required=True, help="SonarQube project key")
     parser.add_argument("--branch", required=False, help="Branch name")
     parser.add_argument("--pr-number", required=False, help="PR number (for SonarCloud PR analysis)")
@@ -231,7 +274,7 @@ def main():
         sys.exit(1)
 
     # Load config
-    config = load_config(args.config)
+    config = load_config(args.config, args.overrides or None)
 
     # Fetch issues
     print(f"Fetching issues for project={args.project_key}, branch={args.branch}, pr={args.pr_number}")

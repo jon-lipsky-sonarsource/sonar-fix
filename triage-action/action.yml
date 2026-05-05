@@ -21,9 +21,20 @@ description: "Fetch and categorize SonarQube issues for AI fix dispatch"
 
 inputs:
   config-path:
-    description: "Path to sonar-fix-config.yml in the calling repo"
+    description: >
+      Path to the BASE sonar-fix-config.yml — typically
+      config/default.yml from the central sonar-fix repo. Sets the
+      filtering defaults (severities, type, allow/deny rules, paths).
     required: true
-    default: ".github/sonar-fix-config.yml"
+  overrides-path:
+    description: >
+      Optional path to a per-repo sonar-fix-config.yml whose keys are
+      deep-merged on top of the base config. Lets a consuming repo
+      override individual fields (commonly just `agent:`) without
+      having to redeclare the whole config schema. Empty or missing
+      path = no overrides applied.
+    required: false
+    default: ""
   project-key:
     description: "SonarQube project key"
     required: true
@@ -64,6 +75,7 @@ runs:
       run: |
         python3 "${{ github.action_path }}/triage_sonar_issues.py" \
           --config "${{ inputs.config-path }}" \
+          --overrides "${{ inputs.overrides-path }}" \
           --project-key "${{ inputs.project-key }}" \
           --branch "${{ inputs.branch }}" \
           --pr-number "${{ inputs.pr-number }}"
