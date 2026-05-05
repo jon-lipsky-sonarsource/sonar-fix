@@ -8,13 +8,12 @@ quality gate fails, the agent fixes the issues and pushes a commit).
 Calling Repo                          Central Repo (this repo)
 ┌─────────────────────┐               ┌──────────────────────────┐
 │ .github/workflows/  │               │ .github/workflows/       │
-│   sonar-fix.yml     │──── calls ───▶│   claude-fix.yml         │
-│                     │               │   copilot-fix.yml        │
-│ .github/            │               │                          │
-│   sonar-fix-        │               │ triage-action/           │
-│     config.yml      │               │   action.yml             │
-└─────────────────────┘               │   triage_sonar_issues.py │
-                                      │                          │
+│   sonar-fix.yml     │──── calls ───▶│   fix.yml                │
+│                     │               │                          │
+│ .github/            │               │ triage-action/           │
+│   sonar-fix-        │               │   action.yml             │
+│     config.yml      │               │   triage_sonar_issues.py │
+└─────────────────────┘               │                          │
                                       │ examples/                │
                                       │   (starter files)        │
                                       └──────────────────────────┘
@@ -81,7 +80,7 @@ The `anthropics/claude-code-action@v1` action exchanges a GitHub OIDC token for 
 
 The App is free and only grants the minimum access claude-code-action needs. There's no recurring cost or billing relationship — your actual Anthropic billing continues via your `ANTHROPIC_API_KEY` (or via your gateway in 1.5).
 
-> Skip this step entirely if you'll only use the Copilot path — `copilot-fix.yml` doesn't run claude-code-action.
+> Skip this step entirely if you'll only use the Copilot path — the Copilot dispatch in `fix.yml` doesn't run claude-code-action.
 
 ### 1.5 (Optional) Route Claude through an API gateway
 
@@ -237,7 +236,7 @@ env:
 
 Once one repo is humming through both manual and automatic runs:
 
-1. **Tag a release** on the central repo: `git tag v1 && git push --tags`. Have consuming repos pin to the tag so future changes don't break them: `uses: my-org/sonar-fix/.github/workflows/claude-fix.yml@v1`.
+1. **Tag a release** on the central repo: `git tag v1 && git push --tags`. Have consuming repos pin to the tag so future changes don't break them: `uses: my-org/sonar-fix/.github/workflows/fix.yml@v1`.
 2. **Copy `sonar-fix.yml`** to each additional repo and edit `my-org` to match your org.
 3. **Add `SONAR_PROJECT_KEY`** as a repo variable in each new repo.
 4. **(Optional) Override the default config** per repo by creating `.github/sonar-fix-config.yml` — only needed when a repo wants different rules, severities, or path exclusions than the central default. Repos without this file fall back to `config/default.yml` from the central repo.
@@ -248,43 +247,46 @@ The agent prompt and default config both live centrally, so most repos only need
 
 ## Reference
 
-### Reusable workflows
+### Reusable workflow `fix.yml`
 
-#### `claude-fix.yml`
+A single reusable workflow handles both agent paths. The consumer's `.github/sonar-fix-config.yml` (or the central default at `config/default.yml`) chooses via the `agent:` field — `claude`, `copilot`, or `both` — and the matching dispatch job inside `fix.yml` activates. Switching agents is a one-line edit to the config; the caller workflow doesn't change.
 
-Claude Code runs in the GitHub Actions runner with the SonarQube MCP server as a Docker sidecar. It reads files, queries SonarQube for rule details, applies fixes, runs Agentic Analysis to verify, and pushes commits.
+**Job structure inside `fix.yml`:**
 
-| Input               | Required | Default                          | Description                    |
-|---------------------|----------|----------------------------------|--------------------------------|
-| `sonar-project-key` | Yes      | —                                | SonarQube project key          |
-| `sonar-org`         | No       | `""`                             | SonarQube Cloud org key        |
-| `sonar-host-url`    | No       | `https://sonarcloud.io`          | SonarQube host URL             |
-| `config-path`       | No       | `.github/sonar-fix-config.yml`   | Path to fix config             |
-| `claude-model`      | No       | `claude-sonnet-4-6`              | Claude model to use            |
-| `run-sonar-scan`    | No       | `true`                           | Set `false` if scan runs elsewhere |
-| `enable-agentic-analysis` | No | `false`                          | Enables `run_advanced_code_analysis` and the full MCP toolset. Requires SonarQube Cloud Team or Enterprise. The example caller turns this on. |
-| `anthropic-base-url` | No      | `""`                             | Custom Anthropic-compatible endpoint URL (Portkey, Helicone, internal proxy). Empty = call Anthropic directly. See 1.4. |
-| `pr-number`         | Yes      | —                                | PR number (caller resolves)    |
-| `pr-branch`         | Yes      | —                                | PR head branch (caller resolves) |
+1. `scan-and-triage` — runs the Sonar scanner (optional) and the triage action; outputs the issue list and the resolved `agent` value
+2. `post-triage-comment` — posts the unified triage comment (auto-fix queue + needs-review)
+3. `claude-fix` — `if: agent in (claude, both)`. Runs Claude Code with the SonarQube MCP server, then the workflow pushes the agent's commits.
+4. `copilot-fix` — `if: agent in (copilot, both)`. Posts an `@copilot` comment with the issues and the central agent prompt. Copilot's coding agent picks it up out-of-band and pushes commits via its own GitHub App identity.
 
-**Secrets:** `SONAR_TOKEN` (required). `ANTHROPIC_API_KEY` (required for direct Anthropic or Helicone-style observability proxies; skip for virtual-key gateways like Portkey — workflow uses a placeholder). `ANTHROPIC_CUSTOM_HEADERS` (optional, only when `anthropic-base-url` is set).
+**Inputs:**
 
-#### `copilot-fix.yml`
+| Input               | Required | Default                          | Used by | Description |
+|---------------------|----------|----------------------------------|---------|-------------|
+| `sonar-project-key` | Yes      | —                                | both    | SonarQube project key |
+| `sonar-org`         | No       | `""`                             | both    | SonarQube Cloud org key |
+| `sonar-host-url`    | No       | `https://sonarcloud.io`          | both    | SonarQube host URL |
+| `config-path`       | No       | `.github/sonar-fix-config.yml`   | both    | Path to fix config |
+| `run-sonar-scan`    | No       | `true`                           | both    | Set `false` if scan runs elsewhere |
+| `pr-number`         | Yes      | —                                | both    | PR number (caller resolves) |
+| `pr-branch`         | Yes      | —                                | both    | PR head branch (caller resolves) |
+| `claude-model`      | No       | `claude-sonnet-4-6`              | Claude  | Claude model to use |
+| `enable-agentic-analysis` | No | `false`                          | Claude  | Enables `run_advanced_code_analysis`. Requires SonarQube Cloud Team or Enterprise. |
+| `anthropic-base-url`| No       | `""`                             | Claude  | Custom Anthropic-compatible endpoint URL. Empty = call Anthropic directly. See 1.5. |
+| `show-full-output`  | No       | `false`                          | Claude  | Surface the agent's tool calls in the run log; debug only. |
 
-Posts an `@copilot` comment on the PR with the triaged issues. GitHub Copilot's coding agent picks it up and pushes fixes from its own session.
+Inputs flagged "Claude" are silently ignored when the active agent is Copilot, so callers can pass them unconditionally and switching agents stays a config-only edit.
 
-| Input               | Required | Default                          | Description                    |
-|---------------------|----------|----------------------------------|--------------------------------|
-| `sonar-project-key` | Yes      | —                                | SonarQube project key          |
-| `sonar-host-url`    | No       | `https://sonarcloud.io`          | SonarQube host URL             |
-| `config-path`       | No       | `.github/sonar-fix-config.yml`   | Path to fix config             |
-| `run-sonar-scan`    | No       | `true`                           | Set `false` if scan runs elsewhere |
-| `pr-number`         | Yes      | —                                | PR number (caller resolves)    |
-| `pr-branch`         | Yes      | —                                | PR head branch (caller resolves) |
+**Secrets:**
 
-**Secrets:** `SONAR_TOKEN`, `COPILOT_PAT`
+| Secret              | Used by | Description |
+|---------------------|---------|-------------|
+| `SONAR_TOKEN`       | both    | Required. SonarQube user token. |
+| `ANTHROPIC_API_KEY` | Claude  | Optional. Required for direct Anthropic or Helicone-style observability proxies. Skip for Portkey-style virtual-key gateways. |
+| `ANTHROPIC_CUSTOM_HEADERS` | Claude | Optional. Gateway auth header(s); only when `anthropic-base-url` is set. |
+| `AGENT_PUSH_TOKEN`  | Claude  | Optional. PAT for the workflow's push step — required for the auto-fix loop to keep iterating (see 1.2). Not used by the Copilot path; Copilot pushes via its own App identity. |
+| `COPILOT_PAT`       | Copilot | Required. PAT used to post the `@copilot` comment. |
 
-**Additional setup:** Each consuming repo must have the SonarQube MCP server configured in Copilot's settings. See `examples/copilot-mcp-setup.json`.
+**Additional Copilot setup:** Each consuming repo must have the SonarQube MCP server configured in Copilot's settings on github.com (Settings → Code & automation → Copilot → Coding agent → MCP configuration) and `COPILOT_MCP_SONAR_TOKEN` / `COPILOT_MCP_SONAR_ORG` set as Copilot environment secrets. See `examples/copilot-mcp-setup.json`. There's no API or file-based mechanism for this — it's a one-time UI step per repo, mandated by GitHub's Copilot platform.
 
 ### Why the caller declares the same permissions as the reusable workflow
 
@@ -304,7 +306,7 @@ permissions:
 
 Each one matches a permission the underlying reusable workflow asks for. The duplication is annoying, but listing it on the caller is the only way to keep "Default workflow permissions" set to read-only repo-wide while still letting sonar-fix do its job. It also keeps the auth surface visible in the consumer's own repo — anyone reviewing `.github/workflows/sonar-fix.yml` can see exactly what the workflow can do without chasing into the central repo.
 
-The Copilot caller (`caller-copilot.yml`) skips `id-token: write` because `copilot-fix.yml` only posts an `@copilot` comment and doesn't authenticate to Anthropic.
+The unified `fix.yml` requests all four permissions even when the active agent is Copilot. Granting unused permissions is harmless — they only authorize jobs that don't run for the current agent. This keeps the caller's permissions block agent-agnostic, so switching `agent:` in your config is a one-line edit.
 
 ### `sonar-fix-config.yml`
 
@@ -350,7 +352,7 @@ Either way, this is the single source of truth. If the SonarQube MCP server gain
 Most teams already have a CI step that runs the Sonar scanner. Set `run-sonar-scan: false` in the caller workflow — the triage job will skip the scan step and fetch existing issues straight from the SonarQube API:
 
 ```yaml
-uses: my-org/sonar-fix/.github/workflows/claude-fix.yml@v1
+uses: my-org/sonar-fix/.github/workflows/fix.yml@v1
 with:
   sonar-project-key: ${{ vars.SONAR_PROJECT_KEY }}
   run-sonar-scan: false
@@ -364,7 +366,7 @@ The `examples/caller-comment-triggered.yml` already sets this — the comment tr
 Tag releases on the central repo (`v1`, `v1.1`, etc.). Consuming repos pin to a tag:
 
 ```yaml
-uses: my-org/sonar-fix/.github/workflows/claude-fix.yml@v1
+uses: my-org/sonar-fix/.github/workflows/fix.yml@v1
 ```
 
 Use `@main` during development, pin to tags for production rollouts.

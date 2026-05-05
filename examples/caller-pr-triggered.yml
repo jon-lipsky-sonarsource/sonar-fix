@@ -1,0 +1,64 @@
+# =============================================================================
+# Caller Workflow: SonarQube Fix — Triggered by PR Events
+# =============================================================================
+# Runs the scan and fix on every PR open/sync. Use this when you don't
+# have SonarCloud PR summary comments enabled, or when you want fixes
+# to run on every push regardless of quality gate state.
+#
+# For the recommended comment-triggered approach (which gives you the
+# automatic fix loop), see examples/caller-comment-triggered.yml.
+#
+# Calls the unified `fix.yml` reusable workflow. The agent (`claude` /
+# `copilot` / `both`) is selected by the consumer's
+# .github/sonar-fix-config.yml — switching agents doesn't require
+# changing this caller.
+#
+# Prerequisites (depend on the agent your config picks):
+#   - Repository secret: SONAR_TOKEN
+#   - Repository variables: SONAR_PROJECT_KEY, SONAR_ORG
+#   - .github/sonar-fix-config.yml with `agent: claude|copilot|both`
+#
+# Claude path:
+#   - Repository secret: ANTHROPIC_API_KEY (or proxy via ANTHROPIC_*)
+#   - Repository secret: AGENT_PUSH_TOKEN
+#   - Claude Code GitHub App installed
+#
+# Copilot path:
+#   - Repository secret: COPILOT_PAT
+#   - Copilot Coding Agent enabled on the repo
+#   - SonarQube MCP configured in Copilot's settings
+# =============================================================================
+
+name: "SonarQube Fix (PR triggered)"
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+concurrency:
+  group: sonar-fix-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# Permissions cover both agent paths. Inputs/secrets that don't apply
+# to the active agent are silently ignored, but unconditional permissions
+# avoid validation errors when the active agent's path needs them.
+permissions:
+  contents: write       # Claude path's "Push agent commits" step
+  pull-requests: write  # both paths post comments
+  issues: write         # PR comments are issue comments under the hood
+  id-token: write       # claude-code-action OIDC
+
+jobs:
+  sonar-fix:
+    uses: my-org/sonar-fix/.github/workflows/fix.yml@v1
+    with:
+      sonar-project-key: ${{ vars.SONAR_PROJECT_KEY }}
+      sonar-org: ${{ vars.SONAR_ORG }}
+      pr-number: ${{ github.event.pull_request.number }}
+      pr-branch: ${{ github.head_ref }}
+      run-sonar-scan: true     # Run the scan ourselves (not waiting for SonarCloud)
+      # Claude-path inputs (used when `agent: claude` or `both`):
+      enable-agentic-analysis: true
+      anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}   # empty = direct
+      show-full-output: ${{ vars.SHOW_FULL_OUTPUT == 'true' }}
+    secrets: inherit

@@ -20,12 +20,23 @@
 # "fix: resolve SonarQube issues") and skips bot-triggered runs once the
 # count exceeds MAX_FIX_ATTEMPTS. The slash command always wins.
 #
-# Prerequisites:
+# Prerequisites (depend on which agent your config picks):
 #   - SonarCloud PR summary comments enabled:
 #     Administration → Pull Requests → Integration with GitHub → Enable summary
-#   - Repository secrets: SONAR_TOKEN, ANTHROPIC_API_KEY
+#   - Repository secret: SONAR_TOKEN
 #   - Repository variables: SONAR_PROJECT_KEY, SONAR_ORG
-#   - .github/sonar-fix-config.yml in this repo
+#   - .github/sonar-fix-config.yml with `agent: claude|copilot|both` (or
+#     rely on the central default at config/default.yml in this repo)
+#
+# For the Claude path (`agent: claude`):
+#   - Repository secret: ANTHROPIC_API_KEY (or skip if proxying via Portkey)
+#   - Repository secret: AGENT_PUSH_TOKEN (PAT — required for full loop)
+#   - Claude Code GitHub App installed (https://github.com/apps/claude)
+#
+# For the Copilot path (`agent: copilot`):
+#   - Repository secret: COPILOT_PAT
+#   - Copilot Coding Agent enabled on the repo
+#   - SonarQube MCP configured in Copilot's settings
 #
 # Bot login: defaults to `sonarqubecloud[bot]` (the current SonarCloud /
 # SonarQube Cloud bot login). Override by setting a `SONAR_BOT_LOGIN`
@@ -263,21 +274,22 @@ jobs:
     name: "Fix"
     needs: detect-and-resolve
     if: needs.detect-and-resolve.outputs.should_run == 'true'
-    uses: my-org/sonar-fix/.github/workflows/claude-fix.yml@v1
+    uses: my-org/sonar-fix/.github/workflows/fix.yml@v1
     with:
       sonar-project-key: ${{ vars.SONAR_PROJECT_KEY }}
       sonar-org: ${{ vars.SONAR_ORG }}
       pr-number: ${{ fromJSON(needs.detect-and-resolve.outputs.pr_number) }}
       pr-branch: ${{ needs.detect-and-resolve.outputs.pr_branch }}
-      enable-agentic-analysis: true
       run-sonar-scan: false   # Analysis already ran — SonarCloud told us so!
-      # Optional: route Claude through an API gateway (Portkey, Helicone, etc.)
-      # by setting a `vars.ANTHROPIC_BASE_URL` repo variable. Empty = direct.
-      anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}
-      # Set `vars.SHOW_FULL_OUTPUT` to "true" temporarily when debugging an
-      # "agent ran cleanly but committed nothing" run. Surfaces tool calls
-      # and reasoning in the log. Default off — most runs don't need it.
+      # The reusable workflow accepts the union of inputs for both agent
+      # paths. Inputs that don't apply to the active agent are silently
+      # ignored — leave them in place so switching `agent:` in
+      # sonar-fix-config.yml is the only edit needed when changing paths.
+      #
+      # Claude-path inputs (used when `agent: claude` or `both`):
+      enable-agentic-analysis: true
+      anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}   # empty = direct
       show-full-output: ${{ vars.SHOW_FULL_OUTPUT == 'true' }}
-      # config-path: ".github/sonar-fix-config.yml"
       # claude-model: "claude-sonnet-4-6"
+      # config-path: ".github/sonar-fix-config.yml"
     secrets: inherit

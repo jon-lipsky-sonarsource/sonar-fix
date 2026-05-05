@@ -26,17 +26,18 @@ The architecture has three layers:
 
 ```
 .github/workflows/
-  claude-fix.yml    # Reusable: scan → triage → Claude Code fix
-  copilot-fix.yml   # Reusable: scan → triage → @copilot comment
+  fix.yml                       # Unified reusable workflow. Inner jobs:
+                                #   scan-and-triage → post-triage-comment →
+                                #   claude-fix (if agent in claude/both)
+                                #   copilot-fix (if agent in copilot/both)
 
 triage-action/
-  action.yml                  # Composite action definition
-  triage_sonar_issues.py      # Python triage engine (fetches + categorizes issues)
+  action.yml                    # Composite action definition
+  triage_sonar_issues.py        # Python triage engine (fetches + categorizes issues)
 
 examples/
   caller-comment-triggered.yml  # Caller: fires on SonarCloud bot PR comment + /sonar-fix
-  caller-claude.yml             # Caller: fires on PR open/push (Claude)
-  caller-copilot.yml            # Caller: fires on PR open/push (Copilot)
+  caller-pr-triggered.yml       # Caller: fires on PR open/push
   copilot-mcp-setup.json        # MCP config for Copilot coding agent settings
 
 prompts/
