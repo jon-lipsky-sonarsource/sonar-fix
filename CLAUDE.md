@@ -4,7 +4,8 @@
 
 This is `sonar-fix`, a central GitHub repo that provides org-wide reusable
 workflows and a composite action for automatically fixing SonarQube issues on
-pull requests using AI coding agents (Claude Code or GitHub Copilot).
+pull requests using AI coding agents (Claude Code, GitHub Copilot, or
+OpenAI Codex).
 
 The architecture has three layers:
 
@@ -28,8 +29,9 @@ The architecture has three layers:
 .github/workflows/
   fix.yml                       # Unified reusable workflow. Inner jobs:
                                 #   scan-and-triage → post-triage-comment →
-                                #   claude-fix (if agent in claude/both)
-                                #   copilot-fix (if agent in copilot/both)
+                                #   claude-fix  (if contains(agent,'claude'))
+                                #   copilot-fix (if contains(agent,'copilot'))
+                                #   codex-fix   (if contains(agent,'codex'))
 
 triage-action/
   action.yml                    # Composite action definition
@@ -65,6 +67,12 @@ config/
   deny list → allow list → path exclusions → severity/type match. Issues that
   pass are `auto_fix`; everything else is `review_only`.
 
+- The `agent` field is a comma-separated list of any of `claude`, `copilot`,
+  `codex`. The triage script normalizes input — `all` expands to all three,
+  unknown tokens hard-fail. Each fix job's `if:` filter uses `contains()` to
+  test membership, which is safe because no agent name is a substring of
+  another.
+
 - When `enable-agentic-analysis: true`, the MCP server is configured with
   `SONARQUBE_TOOLSETS=cag,projects,analysis,issues,quality-gates,rules` and
   `SONARQUBE_ADVANCED_ANALYSIS_ENABLED=true`. The workspace is volume-mounted
@@ -72,7 +80,18 @@ config/
   loop: `get_guidelines` before coding, `run_advanced_code_analysis` after.
 
 - The SonarQube MCP server runs via `docker run mcp/sonarqube` inside the
-  GitHub Actions runner, configured via `--mcp-config` passed to Claude Code.
+  GitHub Actions runner. Claude Code receives the config via
+  `--mcp-config /tmp/sonar-mcp-config.json`. Codex CLI has no such flag —
+  it reads MCP servers from `$CODEX_HOME/config.toml`, so the codex-fix
+  job pre-creates a tmpdir, writes a `[mcp_servers.sonarqube]` table into
+  it (TOML, not JSON), and passes that dir to `openai/codex-action` via
+  the `codex-home:` input.
+
+- Codex has no `--max-turns` equivalent. Runaway protection on the codex-fix
+  job comes from `--ask-for-approval=never` + the natural completion of the
+  task. The `guardrails.max_turns` config field is consulted only by the
+  Claude path. If Codex token cost becomes an issue, look at adding
+  `model_auto_compact_token_limit` to the generated config.toml.
 
 ## Testing Plan
 
@@ -108,6 +127,9 @@ Verify:
 - Path exclusions work
 - max_issues_per_run cap is applied
 - GITHUB_OUTPUT file contains valid JSON
+- The `agent` field is normalized: `all` expands to `claude,copilot,codex`,
+  unknown tokens hard-fail with a clear error, comma lists round-trip
+  cleanly, ordering is deterministic (first-occurrence dedupe).
 
 Consider writing pytest unit tests that mock the SonarQube API responses
 and verify the categorization logic in isolation.
@@ -121,7 +143,8 @@ and verify the categorization logic in isolation.
    - `.github/workflows/sonar-fix.yml` (from `examples/caller-comment-triggered.yml`)
    - `.github/sonar-fix-config.yml` — optional; only if you want to override the central default at `config/default.yml`
    - **No AGENTS.md** — the workflow injects `prompts/sonar-fix-agent.md` into AGENTS.md at run time, shielded from being committed back
-5. Set org-level secrets: `SONAR_TOKEN`, `ANTHROPIC_API_KEY`
+5. Set org-level secrets: `SONAR_TOKEN`, plus the agent-specific secret(s):
+   `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (Codex), `COPILOT_PAT` (Copilot)
 6. Set repo variable: `SONAR_PROJECT_KEY`
 7. Open a PR that introduces code with known SonarQube issues
 8. Wait for SonarCloud to post its comment → verify the fix workflow triggers
@@ -170,6 +193,19 @@ With `enable-agentic-analysis: true`:
 - [ ] The Copilot workflow hasn't been updated with `enable-agentic-analysis`
   support. The MCP config in `copilot-mcp-setup.json` should be updated to
   include the agentic analysis env vars.
+- [ ] Validate at end-to-end run time that `openai/codex-action`'s internal
+  "Write Codex proxy config" step doesn't clobber our pre-written
+  `$CODEX_HOME/config.toml`. The action's bundled JS is opaque; if it
+  overwrites instead of appending, the SonarQube MCP entry gets lost and
+  Codex runs without MCP. If observed, work around by passing the MCP
+  server entries via `codex-args: '["--config", "mcp_servers..."]'`
+  scalar overrides instead of (or in addition to) the TOML file.
+- [ ] Codex's per-MCP-server `enabled_tools` allowlist isn't set on the
+  `[mcp_servers.sonarqube]` block (we permit all). If Codex burns tokens
+  invoking irrelevant SonarQube tools, tighten to the Guide → Fix →
+  Verify protocol's set (`get_guidelines`, `show_rule`,
+  `run_advanced_code_analysis`, `search_by_signature_patterns`,
+  `get_source_code`, etc.).
 - [ ] Add a concurrency group to the comment-triggered caller to prevent
   multiple fix runs on the same PR if SonarCloud posts multiple comments.
 - [ ] Consider adding a "re-scan after fix" step that triggers a new SonarCloud

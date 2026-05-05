@@ -8,15 +8,16 @@
 # For the recommended comment-triggered approach (which gives you the
 # automatic fix loop), see examples/caller-comment-triggered.yml.
 #
-# Calls the unified `fix.yml` reusable workflow. The agent (`claude` /
-# `copilot` / `both`) is selected by the consumer's
+# Calls the unified `fix.yml` reusable workflow. The agent
+# (`claude` / `copilot` / `codex`, individually or as a comma-separated
+# list, or the `all` keyword) is selected by the consumer's
 # .github/sonar-fix-config.yml — switching agents doesn't require
 # changing this caller.
 #
-# Prerequisites (depend on the agent your config picks):
+# Prerequisites (depend on the agents your config picks):
 #   - Repository secret: SONAR_TOKEN
 #   - Repository variables: SONAR_PROJECT_KEY, SONAR_ORG
-#   - .github/sonar-fix-config.yml with `agent: claude|copilot|both`
+#   - .github/sonar-fix-config.yml with `agent:` set
 #
 # Claude path:
 #   - Repository secret: ANTHROPIC_API_KEY (or proxy via ANTHROPIC_*)
@@ -27,6 +28,12 @@
 #   - Repository secret: COPILOT_PAT
 #   - Copilot Coding Agent enabled on the repo
 #   - SonarQube MCP configured in Copilot's settings
+#
+# Codex path:
+#   - Repository secret: OPENAI_API_KEY
+#   - Repository secret: AGENT_PUSH_TOKEN (shared with the Claude path)
+#   - (Optional) vars.OPENAI_BASE_URL + secrets.OPENAI_CUSTOM_HEADERS
+#     for proxy routing
 # =============================================================================
 
 name: "SonarQube Fix (PR triggered)"
@@ -39,7 +46,7 @@ concurrency:
   group: sonar-fix-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
-# Permissions cover both agent paths. Inputs/secrets that don't apply
+# Permissions cover every agent path. Inputs/secrets that don't apply
 # to the active agent are silently ignored, but unconditional permissions
 # avoid validation errors when the active agent's path needs them.
 permissions:
@@ -62,8 +69,11 @@ jobs:
       pr-number: ${{ github.event.pull_request.number }}
       pr-branch: ${{ github.head_ref }}
       run-sonar-scan: true     # Run the scan ourselves (not waiting for SonarCloud)
-      # Claude-path inputs (used when `agent: claude` or `both`):
+      # Claude-path inputs (used when `agent` includes `claude`):
       enable-agentic-analysis: true
       anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}   # empty = direct
       show-full-output: ${{ vars.SHOW_FULL_OUTPUT == 'true' }}
+      # Codex-path inputs (used when `agent` includes `codex`):
+      openai-base-url: ${{ vars.OPENAI_BASE_URL }}         # empty = direct
+      codex-model: ${{ vars.CODEX_MODEL }}                 # empty = Codex default
     secrets: inherit

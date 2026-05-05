@@ -24,7 +24,7 @@ flowchart LR
 
 1. **Trigger** — a SonarCloud bot comment (automated) or a `/sonar-fix` comment from a reviewer (manual)
 2. **Triage** — the workflow fetches the PR's SonarQube issues and splits them into "auto-fix" (matched by your config) and "review-only" (flagged for humans)
-3. **Fix** — issues in the auto-fix bucket go to a coding agent (Claude Code or GitHub Copilot) running with the SonarQube MCP server. The agent reads files, looks up rules, applies fixes, verifies via Agentic Analysis, and pushes a commit.
+3. **Fix** — issues in the auto-fix bucket go to a coding agent (Claude Code, GitHub Copilot, or OpenAI Codex) running with the SonarQube MCP server. The agent reads files, looks up rules, applies fixes, verifies via Agentic Analysis, and pushes a commit.
 4. **Loop** — when the agent's fix lands, SonarCloud re-analyzes. If the quality gate still fails, the workflow runs again. A loop guard caps wasted attempts.
 
 ---
@@ -36,6 +36,7 @@ flowchart LR
 - One of:
   - An **Anthropic API key** (to use Claude Code)
   - A **GitHub Copilot subscription** + a classic PAT with `repo` scope from a Copilot subscriber
+  - An **OpenAI API key** (to use Codex)
 - A **test repo** with known SonarQube issues you can pilot on
 
 The setup is split into three phases. Each one is verifiable on its own — you don't run the next phase until the previous one is working.
@@ -60,7 +61,9 @@ Then go to **Settings → Actions → General** on the new repo and set "Access"
 | `COPILOT_MCP_SONAR_TOKEN` | Copilot | Same value as `SONAR_TOKEN`. Required by GitHub's Copilot platform — Copilot's MCP config can only see secrets prefixed `COPILOT_MCP_`. **If you're running Copilot, you already need this; you can skip `SONAR_TOKEN` entirely.** Claude-only setups don't need this one. |
 | `ANTHROPIC_API_KEY` | Claude      | Anthropic API key. Skip if you only ever route through a virtual-key gateway like Portkey (see 1.5) — the workflow uses a placeholder. Set to your real key for direct Anthropic or for Helicone-style observability proxies that forward to Anthropic. |
 | `COPILOT_PAT`       | Copilot     | GitHub PAT (classic, `repo` scope) from a Copilot subscriber |
-| `AGENT_PUSH_TOKEN`  | Claude (for loop) | GitHub PAT used to push the agent's commits. **Required for the Claude auto-fix loop to keep iterating.** Pushes via PAT trigger your build/Sonar workflow on the new commit, which posts a fresh SonarCloud bot comment, which re-fires sonar-fix. Without this secret, pushes use the default `GITHUB_TOKEN` — the commit lands on the PR but downstream workflows don't auto-run (GHA's recursive-trigger protection), so the loop stalls after one fix unless someone re-comments `/sonar-fix`. Classic PAT with `repo` scope, or fine-grained PAT with `Contents: write` + `Pull requests: write`. Not used by the Copilot path (Copilot's App-identity pushes already trigger downstream workflows). |
+| `OPENAI_API_KEY`    | Codex       | OpenAI API key. Required for the Codex path; usage is billed per token at OpenAI's standard API rates ([rate card](https://help.openai.com/en/articles/20001106-codex-rate-card)). When proxying through a virtual-key gateway (see 1.6), the workflow auto-substitutes a placeholder — leave this unset. For direct OpenAI or Helicone-style observability proxies, set to your real key. |
+| `OPENAI_CUSTOM_HEADERS` | Codex   | Optional. Gateway auth header(s); only used when `vars.OPENAI_BASE_URL` is set. One `Header: value` per line. See 1.6. |
+| `AGENT_PUSH_TOKEN`  | Claude / Codex (for loop) | GitHub PAT used to push the agent's commits. **Required for the auto-fix loop to keep iterating** on the in-runner agent paths (Claude and Codex). Pushes via PAT trigger your build/Sonar workflow on the new commit, which posts a fresh SonarCloud bot comment, which re-fires sonar-fix. Without this secret, pushes use the default `GITHUB_TOKEN` — the commit lands on the PR but downstream workflows don't auto-run (GHA's recursive-trigger protection), so the loop stalls after one fix unless someone re-comments `/sonar-fix`. Classic PAT with `repo` scope, or fine-grained PAT with `Contents: write` + `Pull requests: write`. Not used by the Copilot path (Copilot's App-identity pushes already trigger downstream workflows). |
 
 ### 1.3 Add org-level variables
 
@@ -70,6 +73,8 @@ Same screen → **Variables** tab → **New organization variable**:
 |---------------------|-----------------------------------------|
 | `SONAR_HOST_URL`    | Your Sonar host — e.g. `https://sonarcloud.io`, `https://sonarcloud.us`, or a self-hosted SonarQube Server URL. Either this or `COPILOT_MCP_SONAR_HOST_URL` (same value, different name) — the example callers fall back to the latter when this isn't set. Copilot users only need the prefixed name; it covers both the MCP config and our workflow. |
 | `SONAR_ORG`         | SonarQube Cloud org key. Either this or `COPILOT_MCP_SONAR_ORG` (a Copilot path's MCP often needs both, sharing the same value). The example callers fall back to `vars.COPILOT_MCP_SONAR_ORG` when `vars.SONAR_ORG` is empty — if you're running Copilot, just set the `COPILOT_MCP_SONAR_ORG` variable and skip this one. |
+| `OPENAI_BASE_URL`   | Optional. Custom OpenAI-compatible endpoint URL for routing the Codex path through Portkey, Helicone, or an internal proxy. Mirror of `ANTHROPIC_BASE_URL`. **Must be a Variable, not a Secret** — the caller workflow reads it via `vars.X`. Leave unset to call OpenAI directly. See 1.6. |
+| `CODEX_MODEL`       | Optional. Codex model identifier (e.g. `gpt-5.5`). Leave unset to let Codex pick its current default. Only consulted by the codex-fix dispatch job. |
 
 ### 1.4 Install the Claude Code GitHub App (Claude path only)
 
@@ -82,7 +87,7 @@ The `anthropics/claude-code-action@v1` action exchanges a GitHub OIDC token for 
 
 The App is free and only grants the minimum access claude-code-action needs. There's no recurring cost or billing relationship — your actual Anthropic billing continues via your `ANTHROPIC_API_KEY` (or via your gateway in 1.5).
 
-> Skip this step entirely if you'll only use the Copilot path — the Copilot dispatch in `fix.yml` doesn't run claude-code-action.
+> Skip this step entirely if you'll only use the Copilot path or the Codex path — the Copilot and Codex dispatch jobs in `fix.yml` don't run claude-code-action.
 
 > **Copilot path also needs the workflow-approval setting flipped** so the auto-fix loop can iterate without a human approving each run. Settings → Copilot → Coding agent → uncheck **"Require approval for workflow runs"**. Without this, GitHub treats every Copilot push/comment like an outside-contributor event and queues the downstream `build.yml` + `sonar-fix.yml` runs in `action_required` state — the fix lands on the PR but the loop stalls. See the [March 2026 changelog](https://github.blog/changelog/2026-03-13-optionally-skip-approval-for-copilot-coding-agent-actions-workflows/) for the trade-offs (Copilot's runs can use secrets and consume Actions minutes without manual approval — that's the whole point for an auto-fix loop, but you're trading approval-time security for autonomy).
 
@@ -110,6 +115,35 @@ Skip `ANTHROPIC_API_KEY` from 1.2 — the workflow auto-substitutes a placeholde
 | `ANTHROPIC_CUSTOM_HEADERS` | secret | `Helicone-Auth: Bearer hk_xxxxx` |
 
 The reusable workflow exports `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN=dummy`, and `ANTHROPIC_CUSTOM_HEADERS` to the Claude step's environment only when `ANTHROPIC_BASE_URL` is set, so direct-Anthropic users can ignore this section.
+
+### 1.6 (Optional) Codex prerequisites and proxy routing
+
+The Codex path runs `openai/codex-action@v1` in the runner. It uses the SonarQube MCP server identically to Claude (same Docker image, same toolset gating via `enable-agentic-analysis`). Differences from Claude:
+
+- **Auth is API-key only.** No OIDC, no separate GitHub App. Set `OPENAI_API_KEY` per 1.2 and you're done.
+- **Pricing is per-token** at OpenAI's standard API rates ([Codex rate card](https://help.openai.com/en/articles/20001106-codex-rate-card) · [Codex pricing](https://developers.openai.com/codex/pricing)). Subscription / ChatGPT plan credits don't apply in API-key CI mode.
+- **Recommended model** is whatever Codex's current default is — leave `vars.CODEX_MODEL` unset unless you want to pin a specific identifier.
+
+Like Claude, Codex can be routed through an API gateway. Set `vars.OPENAI_BASE_URL` (Variable, not Secret) to point at the gateway. The reusable workflow writes a custom `[model_providers.gateway]` entry into Codex's `config.toml` and overrides `model_provider` so Codex bypasses the built-in `openai` provider entirely.
+
+**Virtual-key gateways (Portkey, etc.):**
+
+| Name | Type | Example |
+|---|---|---|
+| `OPENAI_BASE_URL` | variable | `https://api.portkey.ai/v1` |
+| `OPENAI_CUSTOM_HEADERS` | secret | `x-portkey-api-key: pk_xxxxx` (one per line) |
+
+Skip `OPENAI_API_KEY` from 1.2 — the workflow auto-substitutes a placeholder when proxying.
+
+**Observability proxies (Helicone, etc.):**
+
+| Name | Type | Example |
+|---|---|---|
+| `OPENAI_BASE_URL` | variable | `https://oai.helicone.ai/v1` |
+| `OPENAI_API_KEY` | secret (from 1.2) | your real OpenAI key (gets forwarded) |
+| `OPENAI_CUSTOM_HEADERS` | secret | `Helicone-Auth: Bearer hk_xxxxx` |
+
+**The `/v1` suffix matters.** Codex talks to `<base>/v1/responses`; without `/v1` you'll see 404s in the proxy logs.
 
 ### Verifying Phase 1
 
@@ -205,6 +239,10 @@ The Actions tab is the source of truth — open the failed run, click the failed
 | **Workflow finishes `success` (`is_error: false`), agent burned 10–15 turns, but no commit appears on the PR.** | Most likely the agent didn't actually commit (everything filtered, agent decided nothing was fixable). The workflow's `Push agent commits` step always runs after the agent and pushes any local commits — so if there's no commit on the PR, the agent didn't make one. | Set `vars.SHOW_FULL_OUTPUT=true` and re-trigger. If the verbose log shows the agent ran `git commit` but the `Push agent commits` step reported "No new commits to push," something rebased history away (rare). Otherwise the agent decided not to fix; check `triage` output and the agent's reasoning. |
 | **Loop iteration sequence shows runs back-to-back with one `cancelled` and the next `skipped`.** Visible in Actions tab as: legitimate run starts → cancels seconds later → next run starts → skips. | A second comment landed within seconds of a matching one and shared the concurrency group, cancelling the matching run before the if filter could skip the non-matching one. SonarCloud posts two comments per analysis (QG status and reviewer guide) seconds apart, so this is common. | The current `examples/caller-comment-triggered.yml` scopes the concurrency group so non-matching events use unique groups and don't cancel matching work. If you copied an older version, re-pull from the central repo. |
 | **Copilot path: agent fixed and pushed, but the loop didn't re-fire.** Build workflow shows `action_required` in the Actions tab. | GitHub treats Copilot's pushes/comments like outside-contributor events; downstream workflows queue in `action_required` until a maintainer approves them. Default per-repo setting since March 2026. | Settings → Copilot → Coding agent → uncheck **"Require approval for workflow runs"**. That lets `build.yml` (and the next `sonar-fix.yml`) run automatically on Copilot's pushes. Trade-off in Phase 1.4. |
+| **"Run Codex to fix issues" step fails:** *401 Unauthorized* or *invalid_api_key* | `OPENAI_API_KEY` missing, mistyped, or scoped to the wrong project. When proxying, `vars.OPENAI_BASE_URL` is set as a Secret instead of a Variable so the caller can't read it. | Confirm `OPENAI_API_KEY` is a repo or org Secret (not a Variable). For proxy routes, confirm `OPENAI_BASE_URL` is a Variable. Both visible at Settings → Secrets and variables → Actions. |
+| **Codex MCP step fails:** `mcp_servers.sonarqube` failed to start or hangs at startup | `mcp/sonarqube` image didn't pull (network restriction), or the MCP container's `SONARQUBE_TOKEN` env var is empty (token fallback chain in `fix.yml` returned nothing). | Check the "Pull MCP server image" step. Confirm `SONAR_TOKEN` *or* `COPILOT_MCP_SONAR_TOKEN` is set as a secret — the workflow falls back from one to the other. |
+| **"Validate proxy config" step fails:** *"OPENAI_CUSTOM_HEADERS is set but openai-base-url is empty"* | You set `OPENAI_BASE_URL` as a repo Secret rather than a Variable. The caller reads it via `vars.X` and can't see secrets. | Delete the secret and recreate as a Variable: Settings → Secrets and variables → Actions → Variables → New. The URL value (e.g. `https://api.portkey.ai/v1`) is non-sensitive. |
+| **Codex run completes successfully but no commit appears on the PR.** | Either Codex decided nothing was fixable, or the agent committed but the `Push agent commits` step found nothing to push (rare; usually a rebase). | Inspect the "Run Codex to fix issues" step's `final-message` output. If Codex reasoned through the issues and intentionally skipped them all, the auto-fix queue may need loosening (`auto_fix.severities` / allow-list). If it claims to have committed, check `git log` in the next step's output. |
 | Agent commit doesn't trigger another run | Expected on the slash-command path. The next run only fires when SonarCloud's bot edits its comment after re-analysis — see 2.6. | Wait for SonarCloud to re-scan and update its comment, or comment `/sonar-fix` again to manually re-trigger. |
 
 ### 2.6 Automatic mode (already running)
@@ -254,41 +292,46 @@ The agent prompt and default config both live centrally, so most repos only need
 
 ### Reusable workflow `fix.yml`
 
-A single reusable workflow handles both agent paths. The consumer's `.github/sonar-fix-config.yml` (or the central default at `config/default.yml`) chooses via the `agent:` field — `claude`, `copilot`, or `both` — and the matching dispatch job inside `fix.yml` activates. Switching agents is a one-line edit to the config; the caller workflow doesn't change.
+A single reusable workflow handles all three agent paths. The consumer's `.github/sonar-fix-config.yml` (or the central default at `config/default.yml`) chooses via the `agent:` field — a single value (`claude` / `copilot` / `codex`), a comma-separated list (e.g. `claude,codex`), or the `all` keyword — and each matching dispatch job inside `fix.yml` activates in parallel. Switching agents is a one-line edit to the config; the caller workflow doesn't change.
 
 **Job structure inside `fix.yml`:**
 
-1. `scan-and-triage` — runs the Sonar scanner (optional) and the triage action; outputs the issue list and the resolved `agent` value
+1. `scan-and-triage` — runs the Sonar scanner (optional) and the triage action; outputs the issue list and the normalized comma-separated `agent` value
 2. `post-triage-comment` — posts the unified triage comment (auto-fix queue + needs-review)
-3. `claude-fix` — `if: agent in (claude, both)`. Runs Claude Code with the SonarQube MCP server, then the workflow pushes the agent's commits.
-4. `copilot-fix` — `if: agent in (copilot, both)`. Posts an `@copilot` comment with the issues and the central agent prompt. Copilot's coding agent picks it up out-of-band and pushes commits via its own GitHub App identity.
+3. `claude-fix` — `if: contains(agent, 'claude')`. Runs Claude Code with the SonarQube MCP server, then the workflow pushes the agent's commits.
+4. `copilot-fix` — `if: contains(agent, 'copilot')`. Posts an `@copilot` comment with the issues and the central agent prompt. Copilot's coding agent picks it up out-of-band and pushes commits via its own GitHub App identity.
+5. `codex-fix` — `if: contains(agent, 'codex')`. Runs the OpenAI Codex CLI in the runner via `openai/codex-action@v1`, with the SonarQube MCP server configured via `$CODEX_HOME/config.toml`. The workflow pushes the agent's commits, identical to the Claude path.
 
 **Inputs:**
 
 | Input               | Required | Default                          | Used by | Description |
 |---------------------|----------|----------------------------------|---------|-------------|
-| `sonar-project-key` | Yes      | —                                | both    | SonarQube project key |
-| `sonar-org`         | No       | `""`                             | both    | SonarQube Cloud org key |
-| `sonar-host-url`    | No       | `https://sonarcloud.io`          | both    | SonarQube host URL |
-| `config-path`       | No       | `.github/sonar-fix-config.yml`   | both    | Path to fix config |
-| `run-sonar-scan`    | No       | `true`                           | both    | Set `false` if scan runs elsewhere |
-| `pr-number`         | Yes      | —                                | both    | PR number (caller resolves) |
-| `pr-branch`         | Yes      | —                                | both    | PR head branch (caller resolves) |
+| `sonar-project-key` | Yes      | —                                | all     | SonarQube project key |
+| `sonar-org`         | No       | `""`                             | all     | SonarQube Cloud org key |
+| `sonar-host-url`    | No       | `https://sonarcloud.io`          | all     | SonarQube host URL |
+| `config-path`       | No       | `.github/sonar-fix-config.yml`   | all     | Path to fix config |
+| `run-sonar-scan`    | No       | `true`                           | all     | Set `false` if scan runs elsewhere |
+| `pr-number`         | Yes      | —                                | all     | PR number (caller resolves) |
+| `pr-branch`         | Yes      | —                                | all     | PR head branch (caller resolves) |
 | `claude-model`      | No       | `claude-sonnet-4-6`              | Claude  | Claude model to use |
-| `enable-agentic-analysis` | No | `false`                          | Claude  | Enables `run_advanced_code_analysis`. Requires SonarQube Cloud Team or Enterprise. |
+| `codex-model`       | No       | `""`                             | Codex   | Codex model identifier. Empty = let Codex pick its current default. |
+| `enable-agentic-analysis` | No | `false`                          | Claude / Codex | Enables `run_advanced_code_analysis` and the cag toolset on the SonarQube MCP server. Requires SonarQube Cloud Team or Enterprise. |
 | `anthropic-base-url`| No       | `""`                             | Claude  | Custom Anthropic-compatible endpoint URL. Empty = call Anthropic directly. See 1.5. |
+| `openai-base-url`   | No       | `""`                             | Codex   | Custom OpenAI-compatible endpoint URL. Empty = call OpenAI directly. See 1.6. |
 | `show-full-output`  | No       | `false`                          | Claude  | Surface the agent's tool calls in the run log; debug only. |
 
-Inputs flagged "Claude" are silently ignored when the active agent is Copilot, so callers can pass them unconditionally and switching agents stays a config-only edit.
+Inputs flagged for a single agent are silently ignored by the others, so callers can pass them unconditionally and switching agents stays a config-only edit.
 
 **Secrets:**
 
 | Secret              | Used by | Description |
 |---------------------|---------|-------------|
-| `SONAR_TOKEN`       | both    | Required. SonarQube user token. |
+| `SONAR_TOKEN`       | all     | Required. SonarQube user token. |
 | `ANTHROPIC_API_KEY` | Claude  | Optional. Required for direct Anthropic or Helicone-style observability proxies. Skip for Portkey-style virtual-key gateways. |
 | `ANTHROPIC_CUSTOM_HEADERS` | Claude | Optional. Gateway auth header(s); only when `anthropic-base-url` is set. |
-| `AGENT_PUSH_TOKEN`  | Claude  | Optional. PAT for the workflow's push step — required for the auto-fix loop to keep iterating (see 1.2). Not used by the Copilot path; Copilot pushes via its own App identity. |
+| `OPENAI_API_KEY`    | Codex   | Required. OpenAI API key. Skip for Portkey-style virtual-key gateways (workflow substitutes a placeholder). Set for direct OpenAI or Helicone-style proxies that forward to OpenAI. |
+| `OPENAI_CUSTOM_HEADERS` | Codex | Optional. Gateway auth header(s); only when `openai-base-url` is set. Wired into the `[model_providers.gateway.http_headers]` block of the Codex config. |
+| `AGENT_PUSH_TOKEN`  | Claude / Codex | Optional but recommended. PAT for the workflow's push step — required for the auto-fix loop to keep iterating on the in-runner agent paths (see 1.2). Not used by the Copilot path; Copilot pushes via its own App identity. |
 | `COPILOT_PAT`       | Copilot | Required. PAT used to post the `@copilot` comment. |
 
 **Additional Copilot setup:** Each consuming repo must have the SonarQube MCP server configured in Copilot's settings on github.com (Settings → Code & automation → Copilot → Coding agent → MCP configuration) and `COPILOT_MCP_SONAR_TOKEN` / `COPILOT_MCP_SONAR_ORG` set as Copilot environment secrets. See `examples/copilot-mcp-setup.json`. There's no API or file-based mechanism for this — it's a one-time UI step per repo, mandated by GitHub's Copilot platform.
@@ -311,7 +354,7 @@ permissions:
 
 Each one matches a permission the underlying reusable workflow asks for. The duplication is annoying, but listing it on the caller is the only way to keep "Default workflow permissions" set to read-only repo-wide while still letting sonar-fix do its job. It also keeps the auth surface visible in the consumer's own repo — anyone reviewing `.github/workflows/sonar-fix.yml` can see exactly what the workflow can do without chasing into the central repo.
 
-The unified `fix.yml` requests all four permissions even when the active agent is Copilot. Granting unused permissions is harmless — they only authorize jobs that don't run for the current agent. This keeps the caller's permissions block agent-agnostic, so switching `agent:` in your config is a one-line edit.
+The unified `fix.yml` requests all four permissions even when only one agent is active. Granting unused permissions is harmless — they only authorize jobs that don't run for the current agent. This keeps the caller's permissions block agent-agnostic, so switching `agent:` in your config is a one-line edit. Note: the Codex path doesn't actually need `id-token: write` (no OIDC flow), but leaving it in the caller's block is fine because the permission is only consumed by claude-code-action when that job runs.
 
 ### `sonar-fix-config.yml`
 
@@ -325,7 +368,7 @@ Issues matching ALL filters land in `auto_fix`; everything else is `review_only`
 
 | Section | What it controls |
 |---|---|
-| `agent` | `claude`, `copilot`, or `both` |
+| `agent` | Single value (`claude` / `copilot` / `codex`), comma-separated list (`claude,codex`), or the keyword `all` (= every agent). |
 | `auto_fix.severities` | Which Sonar severities to fix (e.g. `BLOCKER`, `CRITICAL`, `MAJOR`) |
 | `auto_fix.types` | Which issue types (`BUG`, `CODE_SMELL`, `VULNERABILITY`) |
 | `auto_fix.rules.allow` | Rule keys ALWAYS fixed (overrides severity/type filter) |
@@ -348,6 +391,7 @@ The central agent prompt lives in this repo at `prompts/sonar-fix-agent.md` and 
 How it gets to the agent:
 
 - **Claude path** — the workflow appends this file to the consumer's `AGENTS.md` at run time (shielded from being committed back via `git update-index --skip-worktree`, or `.git/info/exclude` if no `AGENTS.md` existed). Claude Code reads `AGENTS.md` from the working tree as it normally would.
+- **Codex path** — same `AGENTS.md` injection step. Codex CLI walks up the working tree looking for `AGENTS.md` and follows the same convention as Claude, so the central prompt requires no agent-specific branching.
 - **Copilot path** — the workflow inlines the file's contents into the `@copilot` PR comment body alongside the issue list.
 
 Either way, this is the single source of truth. If the SonarQube MCP server gains a new tool, edit this one file and every consumer picks it up on their next run — no per-repo change required.
@@ -391,10 +435,11 @@ flowchart TB
 
   j2["post-triage-comment<br/>PR comment listing the<br/>auto-fix queue + review-only issues"]
 
-  subgraph j3["fix dispatch (agent-conditional)"]
+  subgraph j3["fix dispatch (agent-conditional, parallel)"]
     direction LR
-    claude["claude-fix<br/><i>if agent ∈ {claude, both}</i><br/><br/>Claude Code in runner<br/>with SonarQube MCP sidecar;<br/>workflow pushes commits"]
-    copilot["copilot-fix<br/><i>if agent ∈ {copilot, both}</i><br/><br/>posts @copilot comment;<br/>Copilot agent runs out-of-band<br/>and pushes commits itself"]
+    claude["claude-fix<br/><i>if 'claude' ∈ agent</i><br/><br/>Claude Code in runner<br/>with SonarQube MCP sidecar;<br/>workflow pushes commits"]
+    copilot["copilot-fix<br/><i>if 'copilot' ∈ agent</i><br/><br/>posts @copilot comment;<br/>Copilot agent runs out-of-band<br/>and pushes commits itself"]
+    codex["codex-fix<br/><i>if 'codex' ∈ agent</i><br/><br/>OpenAI Codex CLI in runner<br/>with SonarQube MCP sidecar<br/>(config.toml-based);<br/>workflow pushes commits"]
   end
 
   trig --> j1

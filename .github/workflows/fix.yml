@@ -1,13 +1,16 @@
 # =============================================================================
 # Reusable Workflow: SonarQube Fix
 # =============================================================================
-# Central org-wide workflow. Handles both the Claude Code path and the
-# GitHub Copilot Coding Agent path. The consuming repo's
-# `.github/sonar-fix-config.yml` (or the central default at
-# `config/default.yml`) chooses via the `agent:` field — `claude`,
-# `copilot`, or `both` — and the matching dispatch job below activates.
-# Switching agents is a one-line edit to that config file; the caller
-# workflow doesn't change.
+# Central org-wide workflow. Dispatches one or more AI fix agents in
+# parallel: Claude Code (claude-code-action), GitHub Copilot Coding
+# Agent (out-of-band via @copilot comment), or OpenAI Codex
+# (codex-action). The consuming repo's `.github/sonar-fix-config.yml`
+# (or the central default at `config/default.yml`) selects via the
+# `agent:` field — a single value (`claude`/`copilot`/`codex`), a
+# comma-separated list (`claude,codex`), or the keyword `all`. Each
+# matching dispatch job below activates; the rest skip. Switching
+# agents is a one-line edit to that config file; the caller workflow
+# doesn't change.
 #
 # Supports two trigger modes:
 #   1. PR-triggered: caller fires on pull_request events, passes PR context
@@ -65,6 +68,14 @@ on:
         required: false
         type: string
         default: "claude-sonnet-4-6"
+      codex-model:
+        description: >
+          Codex model to use (e.g. gpt-5.5). Leave empty to let Codex
+          pick its current default. Only consulted by the codex-fix
+          dispatch job.
+        required: false
+        type: string
+        default: ""
       run-sonar-scan:
         description: "Whether to run sonar scan (false if scan runs in a separate workflow)"
         required: false
@@ -88,6 +99,17 @@ on:
           Claude Code through an API gateway (Portkey, Helicone, internal
           proxy, etc.). Leave empty to call Anthropic directly. Pass via a
           `vars.ANTHROPIC_BASE_URL` repo variable in the caller workflow.
+        required: false
+        type: string
+        default: ""
+      openai-base-url:
+        description: >
+          Custom OpenAI-compatible endpoint URL. Set this when routing
+          Codex through an API gateway (Portkey, Helicone, internal
+          proxy, etc.). Leave empty to call OpenAI directly. Pass via a
+          `vars.OPENAI_BASE_URL` repo variable in the caller workflow.
+          Mirrors the Anthropic equivalent above; same routing model
+          (env-var-backed HTTP headers via OPENAI_CUSTOM_HEADERS).
         required: false
         type: string
         default: ""
@@ -132,6 +154,25 @@ on:
           one per line. Typically holds the gateway's API key, e.g.
           "x-portkey-api-key: pk_xxxxx".
         required: false
+      OPENAI_API_KEY:
+        description: >
+          OpenAI API key. Required when `agent` includes `codex`. Used by
+          openai/codex-action to spawn its local Responses API proxy and
+          by the Codex CLI's MCP/responses calls. When routing through a
+          virtual-key gateway (Portkey-style), leave unset — the workflow
+          passes a placeholder. When routing through an observability
+          proxy that forwards to OpenAI (Helicone-style), set this to the
+          real OpenAI key.
+        required: false
+      OPENAI_CUSTOM_HEADERS:
+        description: >
+          Optional. Extra HTTP headers for the OpenAI-compatible endpoint,
+          one per line. Mirrors ANTHROPIC_CUSTOM_HEADERS for the Codex
+          path. Typically holds the gateway's virtual key, e.g.
+          "x-portkey-api-key: pk_xxxxx". Wired into the
+          `[model_providers.proxy].http_headers` block of the Codex
+          config.toml when `openai-base-url` is set.
+        required: false
       AGENT_PUSH_TOKEN:
         description: >
           Optional PAT (or GitHub App installation token) used to push the
@@ -152,10 +193,10 @@ on:
       COPILOT_PAT:
         description: >
           GitHub PAT used to post the @copilot comment that triggers the
-          Copilot Coding Agent. Required when `agent: copilot` (or `both`)
-          is set in the consumer's sonar-fix-config.yml. Classic PAT with
-          `repo` scope from a Copilot-subscribed account; not used by the
-          Claude path.
+          Copilot Coding Agent. Required when `agent` includes `copilot`
+          in the consumer's sonar-fix-config.yml. Classic PAT with
+          `repo` scope from a Copilot-subscribed account; not used by
+          the Claude or Codex paths.
         required: false
 
 permissions:
@@ -351,10 +392,13 @@ jobs:
   claude-fix:
     name: "Claude Fix"
     needs: scan-and-triage
+    # Triage emits `agent` as a normalized comma-separated list (e.g.
+    # "claude" or "claude,codex" or "claude,copilot,codex"). Each agent
+    # token is unique and not a substring of another, so a plain
+    # contains() is the right membership test here.
     if: |
       needs.scan-and-triage.outputs.has_auto_fix == 'true' &&
-      (needs.scan-and-triage.outputs.agent == 'claude' ||
-       needs.scan-and-triage.outputs.agent == 'both')
+      contains(needs.scan-and-triage.outputs.agent, 'claude')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR branch
@@ -646,8 +690,7 @@ jobs:
     needs: scan-and-triage
     if: |
       needs.scan-and-triage.outputs.has_auto_fix == 'true' &&
-      (needs.scan-and-triage.outputs.agent == 'copilot' ||
-       needs.scan-and-triage.outputs.agent == 'both')
+      contains(needs.scan-and-triage.outputs.agent, 'copilot')
     runs-on: ubuntu-latest
     steps:
       # Pull the central sonar-fix repo so we can inline its agent prompt
@@ -704,3 +747,280 @@ jobs:
             });
 
             console.log(`Posted @copilot comment with ${autoFix.length} issues.`);
+
+  # =========================================================================
+  # Job 5: OpenAI Codex fix
+  # =========================================================================
+  # Runs Codex CLI in the runner via openai/codex-action, mirroring the
+  # Claude path's shape: same AGENTS.md prompt injection, same
+  # docker-based SonarQube MCP server, same workflow-driven commit push.
+  # Differences from Claude: MCP is configured via TOML at
+  # $CODEX_HOME/config.toml (no --mcp-config flag exists), auth is
+  # OPENAI_API_KEY-based with no OIDC, and proxy routing flows through
+  # a custom [model_providers.gateway] entry rather than a base-url env.
+  codex-fix:
+    name: "Codex Fix"
+    needs: scan-and-triage
+    if: |
+      needs.scan-and-triage.outputs.has_auto_fix == 'true' &&
+      contains(needs.scan-and-triage.outputs.agent, 'codex')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.pr-branch }}
+          fetch-depth: 0
+
+      # Pull the central sonar-fix repo so we can inject the agent prompt
+      # without asking consumers to ship our prompt fragment in their repo.
+      - name: Checkout sonar-fix repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sonar-fix
+          path: .sonar-fix-action
+
+      # Codex reads AGENTS.md from the working tree exactly like Claude
+      # does, so the same injection + skip-worktree shield applies. The
+      # central prompt at prompts/sonar-fix-agent.md is agent-agnostic.
+      - name: Inject sonar-fix agent prompt into AGENTS.md
+        run: |
+          if [ -f AGENTS.md ]; then
+            git update-index --skip-worktree AGENTS.md
+            printf '\n\n---\n\n' >> AGENTS.md
+          else
+            echo "AGENTS.md" >> .git/info/exclude
+          fi
+          cat .sonar-fix-action/prompts/sonar-fix-agent.md >> AGENTS.md
+          echo "Injected sonar-fix agent prompt into AGENTS.md ($(wc -l < AGENTS.md) lines total)"
+
+      # Pre-create $CODEX_HOME so we can write our config.toml into it
+      # before the action runs. The codex-action accepts a `codex-home`
+      # input that points it at this directory; the CLI then reads
+      # $CODEX_HOME/config.toml for MCP servers and provider settings.
+      - name: Resolve Codex home
+        id: resolve-codex-home
+        run: |
+          DIR="$(mktemp -d -t codex-home.XXXXXX)"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "Codex home: $DIR"
+
+      # Write the SonarQube MCP server entry (and, when proxying,
+      # a custom [model_providers.gateway] block) into config.toml.
+      # Mirrors the Claude path's MCP JSON construction at the
+      # workflow level: same docker run shape, same toolset selection
+      # gated by enable-agentic-analysis. The TOML schema differs from
+      # Claude's MCP JSON — fields are command/args/env (no top-level
+      # mcpServers wrapper) and tables are dotted (`[mcp_servers.X]`).
+      - name: Write Codex MCP + provider config
+        env:
+          CODEX_HOME: ${{ steps.resolve-codex-home.outputs.dir }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN || secrets.COPILOT_MCP_SONAR_TOKEN }}
+          SONAR_ORG: ${{ inputs.sonar-org }}
+          SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
+          SONAR_PROJECT_KEY: ${{ inputs.sonar-project-key }}
+          ENABLE_AGENTIC: ${{ inputs.enable-agentic-analysis }}
+          OPENAI_BASE_URL: ${{ inputs.openai-base-url }}
+          OPENAI_CUSTOM_HEADERS: ${{ secrets.OPENAI_CUSTOM_HEADERS }}
+        run: |
+          set -e
+
+          if [ "$ENABLE_AGENTIC" = "true" ]; then
+            TOOLSETS="cag,projects,analysis,issues,quality-gates,rules"
+            ADVANCED_FLAG="true"
+          else
+            TOOLSETS="issues,projects,quality-gates,rules"
+            ADVANCED_FLAG="false"
+          fi
+          WORKSPACE_DIR="$(pwd)"
+          CONFIG="$CODEX_HOME/config.toml"
+
+          # Branch on SonarQube Cloud (org set) vs Server (no org). The
+          # difference is whether SONARQUBE_ORG / SONARQUBE_ADVANCED_ANALYSIS_ENABLED
+          # are forwarded into the MCP server's container env.
+          if [ -n "$SONAR_ORG" ]; then
+            cat > "$CONFIG" << TOMLEOF
+          [mcp_servers.sonarqube]
+          command = "docker"
+          args = [
+            "run", "--rm", "-i", "--init", "--pull=never",
+            "-e", "SONARQUBE_TOKEN",
+            "-e", "SONARQUBE_ORG",
+            "-e", "SONARQUBE_URL",
+            "-e", "SONARQUBE_PROJECT_KEY",
+            "-e", "SONARQUBE_TOOLSETS",
+            "-e", "SONARQUBE_ADVANCED_ANALYSIS_ENABLED",
+            "-v", "${WORKSPACE_DIR}:/app/mcp-workspace:rw",
+            "mcp/sonarqube",
+          ]
+          startup_timeout_sec = 30
+
+          [mcp_servers.sonarqube.env]
+          SONARQUBE_TOKEN = "${SONAR_TOKEN}"
+          SONARQUBE_ORG = "${SONAR_ORG}"
+          SONARQUBE_URL = "${SONAR_HOST_URL}"
+          SONARQUBE_PROJECT_KEY = "${SONAR_PROJECT_KEY}"
+          SONARQUBE_TOOLSETS = "${TOOLSETS}"
+          SONARQUBE_ADVANCED_ANALYSIS_ENABLED = "${ADVANCED_FLAG}"
+          TOMLEOF
+          else
+            cat > "$CONFIG" << TOMLEOF
+          [mcp_servers.sonarqube]
+          command = "docker"
+          args = [
+            "run", "--rm", "-i", "--init", "--pull=never",
+            "-e", "SONARQUBE_TOKEN",
+            "-e", "SONARQUBE_URL",
+            "-e", "SONARQUBE_PROJECT_KEY",
+            "-e", "SONARQUBE_TOOLSETS",
+            "-v", "${WORKSPACE_DIR}:/app/mcp-workspace:rw",
+            "mcp/sonarqube",
+          ]
+          startup_timeout_sec = 30
+
+          [mcp_servers.sonarqube.env]
+          SONARQUBE_TOKEN = "${SONAR_TOKEN}"
+          SONARQUBE_URL = "${SONAR_HOST_URL}"
+          SONARQUBE_PROJECT_KEY = "${SONAR_PROJECT_KEY}"
+          SONARQUBE_TOOLSETS = "${TOOLSETS}"
+          TOMLEOF
+          fi
+
+          # Proxy/gateway support — only when openai-base-url is set. We
+          # define a custom model_provider that points at the gateway and
+          # override `model_provider` at the top level so Codex bypasses
+          # its built-in `openai` provider entirely. This works for both
+          # virtual-key gateways (Portkey, with auth via http_headers)
+          # and observability proxies (Helicone, with bearer auth via
+          # OPENAI_API_KEY env var). The custom provider id is `gateway`
+          # because `openai` is reserved for the built-in.
+          if [ -n "$OPENAI_BASE_URL" ]; then
+            echo "Routing Codex through proxy: $OPENAI_BASE_URL"
+            cat >> "$CONFIG" << TOMLEOF
+
+          model_provider = "gateway"
+
+          [model_providers.gateway]
+          name = "OpenAI proxy"
+          base_url = "${OPENAI_BASE_URL}"
+          env_key = "OPENAI_API_KEY"
+          wire_api = "responses"
+          TOMLEOF
+
+            # Translate the line-delimited "Header: value" secret into
+            # TOML rows under [model_providers.gateway.http_headers].
+            # Headers may contain colons in their values (e.g. Bearer
+            # tokens), so split only on the FIRST colon.
+            if [ -n "$OPENAI_CUSTOM_HEADERS" ]; then
+              {
+                echo ""
+                echo "[model_providers.gateway.http_headers]"
+              } >> "$CONFIG"
+              while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                name="${line%%:*}"
+                value="${line#*:}"
+                value="${value# }"
+                printf '"%s" = "%s"\n' "$name" "$value" >> "$CONFIG"
+              done <<< "$OPENAI_CUSTOM_HEADERS"
+            fi
+          fi
+
+          echo "Wrote Codex config (toolsets=${TOOLSETS}, agentic=${ADVANCED_FLAG}, proxy=$([ -n "$OPENAI_BASE_URL" ] && echo yes || echo no))"
+          # Don't cat the config back — it embeds the SonarQube token
+          # and (when proxying) the gateway's auth headers.
+
+      - name: Pull MCP server image
+        run: docker pull mcp/sonarqube
+
+      # Mirror of the Claude proxy validation: catch the common
+      # mistake of setting OPENAI_CUSTOM_HEADERS as a Secret while
+      # forgetting to set OPENAI_BASE_URL as a Variable in the caller
+      # repo. Without this check the workflow silently runs against
+      # direct OpenAI even though the user intended to proxy.
+      - name: Validate proxy config
+        if: inputs.openai-base-url == ''
+        env:
+          CUSTOM_HEADERS: ${{ secrets.OPENAI_CUSTOM_HEADERS }}
+        run: |
+          if [ -n "$CUSTOM_HEADERS" ]; then
+            echo "::error::OPENAI_CUSTOM_HEADERS is set but openai-base-url is empty (vars.OPENAI_BASE_URL on the calling repo isn't set). URLs go in repo Variables — see README Phase 1.6."
+            exit 1
+          fi
+          echo "No proxy configured — Codex will call OpenAI directly."
+
+      # When proxying through a virtual-key gateway (Portkey-style),
+      # OPENAI_API_KEY is unused for actual auth — the gateway reads
+      # the virtual key from http_headers instead. But codex-action's
+      # `openai-api-key` input is required to start its local Responses
+      # API proxy bookkeeping; pass a placeholder so the action proceeds.
+      # When OPENAI_API_KEY IS set in secrets (direct OpenAI or
+      # Helicone forwarding the real key), use it as-is.
+      - name: Run Codex to fix issues
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY || (inputs.openai-base-url != '' && 'dummy' || '') }}
+          codex-home: ${{ steps.resolve-codex-home.outputs.dir }}
+          model: ${{ inputs.codex-model }}
+          sandbox: workspace-write
+          safety-strategy: drop-sudo
+          # Mirrors claude-code-action's allowed_bots: lets the
+          # SonarCloud bot's PR comment trigger this action without
+          # bouncing on the write-access check. Reads from the same
+          # source as the if filter so changing vars.SONAR_BOT_LOGIN
+          # once propagates here too.
+          allow-bots: 'true'
+          allow-bot-users: ${{ vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]' }}
+          # No --max-turns equivalent in codex exec; runaway protection
+          # comes from --ask-for-approval=never (no human gate to
+          # accidentally hang on) plus the natural completion of the
+          # task. If cost becomes an issue, switch to a config-toml
+          # `model_auto_compact_token_limit` setting in a follow-up.
+          codex-args: '["--ask-for-approval", "never"]'
+          prompt: |
+            Fix the SonarQube issues listed below in this pull request.
+
+            Follow the Guide → Fix → Verify protocol described in `AGENTS.md`
+            in the repo root. That file is the single source of truth for the
+            tool sequence, rule lookup, verification cycles, commit format,
+            and guardrails. The workflow has just injected the central
+            sonar-fix instructions into it — read AGENTS.md before you start.
+
+            ${{ inputs.enable-agentic-analysis && format('Note: agentic analysis is ENABLED for this run. When you call `run_advanced_code_analysis`, pass `branchName: "{0}"`.', inputs.pr-branch) || 'Note: agentic analysis is DISABLED for this run; skip the VERIFY step that calls `run_advanced_code_analysis` and review your changes for correctness instead.' }}
+
+            ## Issues to fix
+
+            ```json
+            ${{ toJSON(fromJSON(needs.scan-and-triage.outputs.issues_json).auto_fix) }}
+            ```
+
+      # Identical to claude-fix's push step — Codex commits in our
+      # runner under whatever git identity is configured, and we own
+      # the push. Same loop-iteration story: AGENT_PUSH_TOKEN fires
+      # downstream workflows; GITHUB_TOKEN doesn't (recursive-trigger
+      # protection) and stalls the loop after one iteration.
+      - name: Push agent commits
+        env:
+          PR_BRANCH: ${{ inputs.pr-branch }}
+          PUSH_PAT: ${{ secrets.AGENT_PUSH_TOKEN }}
+          DEFAULT_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ -n "$PUSH_PAT" ]; then
+            echo "Using AGENT_PUSH_TOKEN — pushes will trigger downstream workflows, so the auto-fix loop will continue iterating until QG passes or the loop guard trips."
+            TOKEN="$PUSH_PAT"
+          else
+            echo "::warning::AGENT_PUSH_TOKEN not set. Falling back to GITHUB_TOKEN. Pushes will succeed but won't trigger downstream workflows (per GHA's recursive-trigger protection), so the auto-fix loop stalls after one fix unless someone re-comments /sonar-fix. To get full loop behaviour, add a PAT secret AGENT_PUSH_TOKEN — see README Phase 1."
+            TOKEN="$DEFAULT_TOKEN"
+          fi
+
+          git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${GH_REPO}.git"
+          git fetch origin "$PR_BRANCH" --quiet
+          NEW_COMMITS=$(git rev-list --count "origin/$PR_BRANCH..HEAD" 2>/dev/null || echo 0)
+          if [ "$NEW_COMMITS" = "0" ]; then
+            echo "No new commits from the agent — nothing to push."
+            exit 0
+          fi
+          echo "Pushing $NEW_COMMITS commit(s) to origin/$PR_BRANCH:"
+          git log --oneline "origin/$PR_BRANCH..HEAD"
+          git push origin "HEAD:refs/heads/$PR_BRANCH"
