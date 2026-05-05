@@ -124,34 +124,60 @@ jobs:
           SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
 
   # =========================================================================
-  # Job 2: Post review-only comments
+  # Job 2: Post triage comment listing both auto-fix queue and review-only
   # =========================================================================
-  post-review-comments:
-    name: "Post Review Comments"
+  post-triage-comment:
+    name: "Post Triage Comment"
     needs: scan-and-triage
     if: needs.scan-and-triage.outputs.has_issues == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Post review-only issues
+      - name: Post triage comment
         uses: actions/github-script@v7
         with:
           script: |
             const issuesData = ${{ needs.scan-and-triage.outputs.issues_json }};
+            const autoFix = issuesData.auto_fix || [];
             const reviewOnly = issuesData.review_only || [];
-            if (reviewOnly.length === 0) return;
+            const summary = issuesData.summary || {};
+
+            if (autoFix.length === 0 && reviewOnly.length === 0) return;
 
             const severityEmoji = {
               BLOCKER: '🔴', CRITICAL: '🟠', MAJOR: '🟡',
               MINOR: '🔵', INFO: '⚪'
             };
 
-            let body = `## 🔍 SonarQube Issues — Requires Human Review\n\n`;
-            for (const issue of reviewOnly) {
-              const emoji = severityEmoji[issue.severity] || '❓';
-              body += `- ${emoji} **\`${issue.rule}\`** in \`${issue.component}\``;
-              if (issue.line) body += `:${issue.line}`;
-              body += ` — ${issue.message}\n`;
+            const formatList = (issues) => {
+              let out = '';
+              for (const i of issues) {
+                const emoji = severityEmoji[i.severity] || '❓';
+                out += `- ${emoji} **\`${i.rule}\`** in \`${i.component}\``;
+                if (i.line) out += `:${i.line}`;
+                out += ` — ${i.message}\n`;
+              }
+              return out;
+            };
+
+            const total = summary.total_issues || (autoFix.length + reviewOnly.length);
+            let body = `## 🤖 sonar-fix — triage report\n\n`;
+            body += `Found **${total}** SonarQube issue(s) on this PR.\n\n`;
+
+            if (autoFix.length > 0) {
+              body += `### 🔧 Dispatched to @copilot (${autoFix.length})\n\n`;
+              body += formatList(autoFix);
+              body += '\n';
             }
+
+            if (reviewOnly.length > 0) {
+              body += `### 🔍 Needs human review (${reviewOnly.length})\n\n`;
+              body += formatList(reviewOnly);
+              body += '\n';
+            }
+
+            body += `---\n`;
+            body += `<sub>Posted by [sonar-fix](https://github.com/${{ github.repository_owner }}/sonar-fix). `;
+            body += `${total} total · ${autoFix.length} to fix · ${reviewOnly.length} for review.</sub>`;
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,

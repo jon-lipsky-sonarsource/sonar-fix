@@ -173,7 +173,7 @@ In the **Actions** tab of the test repo you should see:
 - A workflow run titled **"SonarQube Fix (Comment Triggered)"**
 - **Detect Trigger & Resolve PR** — completes, output `trigger=slash-command`
 - **Fix / Scan & Triage** — fetches issues from SonarQube, splits them into auto-fix and review-only
-- **Fix / Post Review Comments** — posts a PR comment listing the review-only issues
+- **Fix / Post Triage Comment** — posts a PR comment listing what's queued for auto-fix and what needs human review
 - **Fix / Claude Fix** — pulls the SonarQube MCP Docker image, runs the agent, pushes a commit
 - A new commit on the PR with subject **`fix: resolve SonarQube issues (automated)`**
 

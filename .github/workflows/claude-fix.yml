@@ -205,24 +205,25 @@ jobs:
           SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
 
   # =========================================================================
-  # Job 2: Post review-only comments
+  # Job 2: Post triage comment listing both auto-fix queue and review-only
   # =========================================================================
-  post-review-comments:
-    name: "Post Review Comments"
+  post-triage-comment:
+    name: "Post Triage Comment"
     needs: scan-and-triage
     if: needs.scan-and-triage.outputs.has_issues == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Post review-only issues
+      - name: Post triage comment
         uses: actions/github-script@v7
         with:
           script: |
             const issuesData = ${{ needs.scan-and-triage.outputs.issues_json }};
+            const autoFix = issuesData.auto_fix || [];
             const reviewOnly = issuesData.review_only || [];
             const summary = issuesData.summary || {};
 
-            if (reviewOnly.length === 0) {
-              console.log('No review-only issues to post.');
+            if (autoFix.length === 0 && reviewOnly.length === 0) {
+              console.log('No issues to report.');
               return;
             }
 
@@ -231,35 +232,51 @@ jobs:
               MINOR: '🔵', INFO: '⚪'
             };
 
-            let body = `## 🔍 SonarQube Issues — Requires Human Review\n\n`;
-            body += `> These issues need manual attention per your `;
-            body += `[fix config](${{ inputs.config-path }}).\n\n`;
+            const formatTable = (issues) => {
+              const grouped = {};
+              for (const i of issues) {
+                const sev = i.severity || 'UNKNOWN';
+                if (!grouped[sev]) grouped[sev] = [];
+                grouped[sev].push(i);
+              }
+              let out = '';
+              for (const [sev, list] of Object.entries(grouped)) {
+                const emoji = severityEmoji[sev] || '❓';
+                out += `#### ${emoji} ${sev} (${list.length})\n\n`;
+                out += '| Rule | File | Line | Message |\n';
+                out += '|------|------|------|---------|\n';
+                for (const i of list) {
+                  const msg = i.message.length > 80
+                    ? i.message.slice(0, 77) + '...' : i.message;
+                  out += `| \`${i.rule}\` | \`${i.component}\` | ${i.line || '—'} | ${msg} |\n`;
+                }
+                out += '\n';
+              }
+              return out;
+            };
 
-            // Group by severity
-            const grouped = {};
-            for (const issue of reviewOnly) {
-              const sev = issue.severity || 'UNKNOWN';
-              if (!grouped[sev]) grouped[sev] = [];
-              grouped[sev].push(issue);
+            const total = summary.total_issues || (autoFix.length + reviewOnly.length);
+            let body = `## 🤖 sonar-fix — triage report\n\n`;
+            body += `Found **${total}** SonarQube issue(s) on this PR. Here's what's about to happen.\n\n`;
+
+            if (autoFix.length > 0) {
+              body += `### 🔧 Auto-fix queue (${autoFix.length})\n\n`;
+              body += `An AI agent will attempt fixes for these and push a commit. Look for a `;
+              body += `\`fix: resolve SonarQube issues\` commit shortly.\n\n`;
+              body += formatTable(autoFix);
             }
 
-            for (const [sev, issues] of Object.entries(grouped)) {
-              const emoji = severityEmoji[sev] || '❓';
-              body += `### ${emoji} ${sev} (${issues.length})\n\n`;
-              body += `| Rule | File | Line | Message |\n`;
-              body += `|------|------|------|---------|\n`;
-              for (const i of issues) {
-                const msg = i.message.length > 80
-                  ? i.message.slice(0, 77) + '...' : i.message;
-                body += `| \`${i.rule}\` | \`${i.component}\` | ${i.line || '—'} | ${msg} |\n`;
-              }
-              body += `\n`;
+            if (reviewOnly.length > 0) {
+              body += `### 🔍 Needs human review (${reviewOnly.length})\n\n`;
+              body += `These are excluded from auto-fix per the `;
+              body += `[fix config](${{ inputs.config-path }}) (severity threshold, deny-list, `;
+              body += `path exclusion, etc.). Address them manually if needed.\n\n`;
+              body += formatTable(reviewOnly);
             }
 
             body += `---\n`;
-            body += `*${summary.total_issues || '?'} total · `;
-            body += `${summary.auto_fix_count || 0} to fix · `;
-            body += `${reviewOnly.length} for review*`;
+            body += `<sub>Posted by [sonar-fix](https://github.com/${{ github.repository_owner }}/sonar-fix). `;
+            body += `${total} total · ${autoFix.length} to fix · ${reviewOnly.length} for review.</sub>`;
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,
