@@ -54,6 +54,11 @@ jobs:
     with:
       sonar-project-key: ${{ vars.SONAR_PROJECT_KEY || vars.COPILOT_MCP_SONAR_PROJECT_KEY }}
       sonar-org: ${{ vars.SONAR_ORG || vars.COPILOT_MCP_SONAR_ORG }}
+      # SonarCloud has multiple regional URLs (sonarcloud.io, sonarcloud.us,
+      # SonarQube Server self-hosted instances at custom domains, etc.). Set
+      # `vars.SONAR_HOST_URL` (or `vars.COPILOT_MCP_SONAR_HOST_URL`) to your
+      # actual host. The trailing literal is the global SonarCloud default.
+      sonar-host-url: ${{ vars.SONAR_HOST_URL || vars.COPILOT_MCP_SONAR_HOST_URL || 'https://sonarcloud.io' }}
       pr-number: ${{ github.event.pull_request.number }}
       pr-branch: ${{ github.head_ref }}
       run-sonar-scan: true     # Run the scan ourselves (not waiting for SonarCloud)

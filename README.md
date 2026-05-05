@@ -67,7 +67,7 @@ Same screen → **Variables** tab → **New organization variable**:
 
 | Variable            | Description                             |
 |---------------------|-----------------------------------------|
-| `SONAR_HOST_URL`    | e.g. `https://sonarcloud.io`            |
+| `SONAR_HOST_URL`    | Your Sonar host — e.g. `https://sonarcloud.io`, `https://sonarcloud.us`, or a self-hosted SonarQube Server URL. Either this or `COPILOT_MCP_SONAR_HOST_URL` (same value, different name) — the example callers fall back to the latter when this isn't set. Copilot users only need the prefixed name; it covers both the MCP config and our workflow. |
 | `SONAR_ORG`         | SonarQube Cloud org key. Either this or `COPILOT_MCP_SONAR_ORG` (a Copilot path's MCP often needs both, sharing the same value). The example callers fall back to `vars.COPILOT_MCP_SONAR_ORG` when `vars.SONAR_ORG` is empty — if you're running Copilot, just set the `COPILOT_MCP_SONAR_ORG` variable and skip this one. |
 
 ### 1.4 Install the Claude Code GitHub App (Claude path only)
