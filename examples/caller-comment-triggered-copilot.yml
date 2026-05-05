@@ -1,0 +1,204 @@
+# =============================================================================
+# Caller Workflow: SonarQube Fix (Copilot) — Comment Triggered
+# =============================================================================
+# Same trigger pattern and loop semantics as caller-comment-triggered.yml
+# (the Claude version), but dispatches to the Copilot reusable workflow,
+# which posts an `@copilot` comment that GitHub Copilot's coding agent
+# picks up and acts on out-of-band.
+#
+# Fires on either of two PR comment events:
+#
+#   1. SonarCloud bot posts (or edits) its quality gate summary comment.
+#      Triggers a fix run when QG failed. Copilot acts asynchronously and
+#      pushes commits via its own GitHub App identity — those pushes
+#      trigger your build workflow naturally (no AGENT_PUSH_TOKEN needed),
+#      Sonar reanalyzes, the bot edits its comment → this fires again →
+#      loop continues until QG passes or the loop guard trips.
+#
+#   2. A repo collaborator comments "/sonar-fix" on a PR.
+#      Manual override — runs regardless of QG status, bypasses loop guard.
+#
+# Loop guard: counts prior fix commits on the PR (by message prefix
+# "fix: resolve SonarQube issues") and skips bot-triggered runs once the
+# count exceeds MAX_FIX_ATTEMPTS. Copilot is instructed via the central
+# agent prompt to use that exact subject prefix.
+#
+# Prerequisites:
+#   - SonarCloud PR summary comments enabled
+#   - Copilot Coding Agent enabled on this repo:
+#     Settings → Code & automation → Copilot → Coding agent
+#   - SonarQube MCP server configured in Copilot's settings
+#     (see examples/copilot-mcp-setup.json in the central repo)
+#   - Repository secrets: SONAR_TOKEN, COPILOT_PAT
+#   - Repository variables: SONAR_PROJECT_KEY
+#   - .github/sonar-fix-config.yml with `agent: copilot` (or `both`)
+# =============================================================================
+
+name: "SonarQube Fix (Comment Triggered, Copilot)"
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+# See caller-comment-triggered.yml for the rationale on this expression —
+# matching events share `sonar-fix-pr-{N}-match` so they cancel each other
+# correctly; non-matching events get unique groups so they don't cancel
+# legitimate work.
+concurrency:
+  group: >-
+    ${{ format('sonar-fix-pr-{0}-{1}',
+        github.event.issue.number,
+        ((github.event.comment.user.login == (vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]')
+          && contains(github.event.comment.body, 'Quality Gate'))
+         || contains(github.event.comment.body, '/sonar-fix'))
+        && 'match'
+        || github.event.comment.id) }}
+  cancel-in-progress: true
+
+# The Copilot path doesn't push from the runner (Copilot does that itself,
+# from its own session) and doesn't run claude-code-action, so it needs
+# only the comment-posting permissions, NOT contents:write or id-token:write.
+permissions:
+  pull-requests: write
+  issues: write
+
+env:
+  SONAR_BOT_LOGIN: ${{ vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]' }}
+  MAX_FIX_ATTEMPTS: "3"
+  FIX_COMMIT_PREFIX: "fix: resolve SonarQube issues"
+
+jobs:
+  detect-and-resolve:
+    name: "Detect Trigger & Resolve PR"
+    runs-on: ubuntu-latest
+
+    if: |
+      github.event.issue.pull_request && (
+        (
+          github.event.comment.user.login == (vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]') &&
+          contains(github.event.comment.body, 'Quality Gate')
+        ) || (
+          contains(github.event.comment.body, '/sonar-fix') &&
+          (
+            github.event.comment.author_association == 'OWNER' ||
+            github.event.comment.author_association == 'MEMBER' ||
+            github.event.comment.author_association == 'COLLABORATOR'
+          )
+        )
+      )
+
+    outputs:
+      pr_number: ${{ steps.pr-info.outputs.pr_number }}
+      pr_branch: ${{ steps.pr-info.outputs.pr_branch }}
+      trigger: ${{ steps.classify.outputs.trigger }}
+      quality_gate_failed: ${{ steps.parse-comment.outputs.quality_gate_failed }}
+      attempts: ${{ steps.count-attempts.outputs.attempts }}
+      should_run: ${{ steps.decide.outputs.should_run }}
+
+    steps:
+      - name: Resolve PR details
+        id: pr-info
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.issue.number,
+            });
+            core.setOutput('pr_number', pr.number);
+            core.setOutput('pr_branch', pr.head.ref);
+            core.setOutput('pr_state', pr.state);
+            console.log(`PR #${pr.number} — branch: ${pr.head.ref}, state: ${pr.state}`);
+
+      - name: Classify trigger (sonar-bot vs slash-command)
+        id: classify
+        env:
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          if [ "$COMMENT_AUTHOR" = "$SONAR_BOT_LOGIN" ]; then
+            echo "Trigger: sonar-bot comment"
+            echo "trigger=sonar-bot" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$COMMENT_BODY" | grep -qF "/sonar-fix"; then
+            echo "Trigger: /sonar-fix slash command from $COMMENT_AUTHOR"
+            echo "trigger=slash-command" >> "$GITHUB_OUTPUT"
+          else
+            echo "Trigger: unknown — skipping"
+            echo "trigger=unknown" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Parse quality gate status from comment
+        id: parse-comment
+        if: steps.classify.outputs.trigger == 'sonar-bot'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.comment.body;
+            const passed = body.includes('Quality Gate passed') || body.includes('✅');
+            const failed = body.includes('Quality Gate failed') || body.includes('❌');
+            core.setOutput('quality_gate_failed', failed ? 'true' : 'false');
+            core.setOutput('quality_gate_passed', passed ? 'true' : 'false');
+            console.log(`Quality gate: ${failed ? 'FAILED' : passed ? 'PASSED' : 'UNKNOWN'}`);
+
+      - name: Count prior fix attempts on this PR
+        id: count-attempts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr-info.outputs.pr_number }}
+        run: |
+          ATTEMPTS=$(gh api \
+            "repos/${{ github.repository }}/pulls/${PR_NUMBER}/commits" \
+            --paginate \
+            --jq "[.[] | select(.commit.message | startswith(\"${FIX_COMMIT_PREFIX}\"))] | length")
+          echo "Prior fix commits on PR #${PR_NUMBER}: ${ATTEMPTS}"
+          echo "attempts=${ATTEMPTS}" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether to run fix
+        id: decide
+        run: |
+          PR_STATE="${{ steps.pr-info.outputs.pr_state }}"
+          TRIGGER="${{ steps.classify.outputs.trigger }}"
+          QG_FAILED="${{ steps.parse-comment.outputs.quality_gate_failed }}"
+          ATTEMPTS="${{ steps.count-attempts.outputs.attempts }}"
+
+          if [ "$PR_STATE" != "open" ]; then
+            echo "PR is not open (state=$PR_STATE). Skipping."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$TRIGGER" = "slash-command" ]; then
+            echo "Slash command from authorized user. Running (bypassing loop cap)."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$QG_FAILED" != "true" ]; then
+            echo "Quality gate passed (or status unknown). Skipping fix."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$ATTEMPTS" -gt "$MAX_FIX_ATTEMPTS" ]; then
+            echo "Loop guard tripped: ${ATTEMPTS} prior fix commits on this PR (max ${MAX_FIX_ATTEMPTS})."
+            echo "Comment '/sonar-fix' on the PR to override and force another attempt."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Quality gate failed and within attempt cap (${ATTEMPTS}/${MAX_FIX_ATTEMPTS}). Running fix."
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+
+  fix:
+    name: "Fix"
+    needs: detect-and-resolve
+    if: needs.detect-and-resolve.outputs.should_run == 'true'
+    uses: my-org/sonar-fix/.github/workflows/copilot-fix.yml@v1
+    with:
+      sonar-project-key: ${{ vars.SONAR_PROJECT_KEY }}
+      pr-number: ${{ fromJSON(needs.detect-and-resolve.outputs.pr_number) }}
+      pr-branch: ${{ needs.detect-and-resolve.outputs.pr_branch }}
+      run-sonar-scan: false   # Analysis already ran — SonarCloud told us so!
+      # config-path: ".github/sonar-fix-config.yml"
+    secrets: inherit
