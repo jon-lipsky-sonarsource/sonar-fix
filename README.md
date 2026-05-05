@@ -4,19 +4,20 @@ Org-wide reusable workflows that fix SonarQube issues on pull requests using AI 
 Works manually on demand (a reviewer comments `/sonar-fix`) and automatically (when SonarCloud's
 quality gate fails, the agent fixes the issues and pushes a commit).
 
-```
-Calling Repo                          Central Repo (this repo)
-┌─────────────────────┐               ┌──────────────────────────┐
-│ .github/workflows/  │               │ .github/workflows/       │
-│   sonar-fix.yml     │──── calls ───▶│   fix.yml                │
-│                     │               │                          │
-│ .github/            │               │ triage-action/           │
-│   sonar-fix-        │               │   action.yml             │
-│     config.yml      │               │   triage_sonar_issues.py │
-└─────────────────────┘               │                          │
-                                      │ examples/                │
-                                      │   (starter files)        │
-                                      └──────────────────────────┘
+```mermaid
+flowchart LR
+  subgraph caller["Calling repo"]
+    direction TB
+    cw[".github/workflows/<br/>sonar-fix.yml"]
+    cc[".github/<br/>sonar-fix-config.yml"]
+  end
+  subgraph central["Central repo (sonar-fix)"]
+    direction TB
+    fw[".github/workflows/<br/>fix.yml"]
+    ta["triage-action/<br/>(composite action)"]
+    ex["examples/<br/>(starter files)"]
+  end
+  cw -- calls --> fw
 ```
 
 ## How it works
@@ -374,34 +375,26 @@ Use `@main` during development, pin to tags for production rollouts.
 
 ### Architecture (under the hood)
 
-```
-                  ┌─────────────────────────────────┐
-                  │       Calling Repo PR Event      │
-                  └──────────────┬──────────────────┘
-                                 │
-                  ┌──────────────▼──────────────────┐
-                  │  Job 1: sonar-scan-and-triage    │
-                  │  ┌─────────────────────────────┐ │
-                  │  │ SonarQube Scan Action        │ │
-                  │  └─────────────┬───────────────┘ │
-                  │  ┌─────────────▼───────────────┐ │
-                  │  │ Triage Composite Action      │ │
-                  │  │ (from central repo)          │ │
-                  │  │ - Fetches issues via API     │ │
-                  │  │ - Applies config filters     │ │
-                  │  │ - Outputs categorized JSON   │ │
-                  │  └─────────────────────────────┘ │
-                  └──────┬───────────────┬──────────┘
-                         │               │
-          ┌──────────────▼───┐   ┌───────▼──────────────┐
-          │ Job 2: Review    │   │ Job 3: Fix           │
-          │ Comments         │   │                      │
-          │ (PR comment with │   │ Claude Code          │
-          │  human-review    │   │   runs in-runner     │
-          │  issues)         │   │   with MCP sidecar   │
-          │                  │   │                      │
-          │                  │   │ @copilot             │
-          │                  │   │   comment triggers   │
-          │                  │   │   coding agent       │
-          └──────────────────┘   └──────────────────────┘
+```mermaid
+flowchart TB
+  trig([PR event or<br/>/sonar-fix comment])
+
+  subgraph j1["scan-and-triage"]
+    direction TB
+    scan["SonarQube scan<br/>(optional — skip if your<br/>build workflow already runs it)"]
+    triage["Triage composite action<br/>fetches issues via API,<br/>applies config filters,<br/>outputs categorized JSON"]
+    scan --> triage
+  end
+
+  j2["post-triage-comment<br/>PR comment listing the<br/>auto-fix queue + review-only issues"]
+
+  subgraph j3["fix dispatch (agent-conditional)"]
+    direction LR
+    claude["claude-fix<br/><i>if agent ∈ {claude, both}</i><br/><br/>Claude Code in runner<br/>with SonarQube MCP sidecar;<br/>workflow pushes commits"]
+    copilot["copilot-fix<br/><i>if agent ∈ {copilot, both}</i><br/><br/>posts @copilot comment;<br/>Copilot agent runs out-of-band<br/>and pushes commits itself"]
+  end
+
+  trig --> j1
+  j1 --> j2
+  j1 --> j3
 ```
