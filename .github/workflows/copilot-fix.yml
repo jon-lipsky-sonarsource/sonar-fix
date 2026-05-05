@@ -148,9 +148,10 @@ jobs:
               MINOR: '🔵', INFO: '⚪'
             };
 
-            // Deep-link each issue to its detail page in SonarCloud /
-            // SonarQube Cloud. Falls back to a plain code span when the
-            // issue's `key` field is missing.
+            // Deep-link each issue's location (file:line) to its detail
+            // page in SonarCloud / SonarQube Cloud. The link goes on the
+            // location, NOT the rule key — the URL points at a specific
+            // occurrence, not the rule pattern.
             const sonarHost = '${{ inputs.sonar-host-url }}'.replace(/\/+$/, '');
             const projectKey = '${{ inputs.sonar-project-key }}';
             const prNumber = ${{ inputs.pr-number }};
@@ -158,16 +159,16 @@ jobs:
               `${sonarHost}/project/issues?id=${encodeURIComponent(projectKey)}` +
               `&pullRequest=${prNumber}&open=${encodeURIComponent(issueKey)}` +
               `&issues=${encodeURIComponent(issueKey)}`;
-            const ruleSpan = (i) =>
-              i.key ? `[\`${i.rule}\`](${sonarLink(i.key)})` : `\`${i.rule}\``;
 
             const formatList = (issues) => {
               let out = '';
               for (const i of issues) {
                 const emoji = severityEmoji[i.severity] || '❓';
-                out += `- ${emoji} **${ruleSpan(i)}** in \`${i.component}\``;
-                if (i.line) out += `:${i.line}`;
-                out += ` — ${i.message}\n`;
+                const loc = i.line ? `${i.component}:${i.line}` : i.component;
+                const linkedLoc = i.key
+                  ? `[\`${loc}\`](${sonarLink(i.key)})`
+                  : `\`${loc}\``;
+                out += `- ${emoji} **\`${i.rule}\`** in ${linkedLoc} — ${i.message}\n`;
               }
               return out;
             };

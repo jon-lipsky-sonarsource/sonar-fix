@@ -235,8 +235,11 @@ jobs:
             // Build a deep link to each issue in SonarCloud / SonarQube
             // Cloud. The `open` query parameter highlights and opens the
             // issue in the side panel; `pullRequest` scopes the issue list
-            // to this PR's analysis. Falls back to a plain code span if the
-            // issue's `key` field is missing for some reason.
+            // to this PR's analysis. We attach the link to the location
+            // (line number, or file path when there's no line), NOT to
+            // the rule key — the rule key names a rule pattern, but the
+            // URL points at a specific occurrence at a specific location,
+            // so the location is the semantically correct anchor.
             const sonarHost = '${{ inputs.sonar-host-url }}'.replace(/\/+$/, '');
             const projectKey = '${{ inputs.sonar-project-key }}';
             const prNumber = ${{ inputs.pr-number }};
@@ -244,8 +247,14 @@ jobs:
               `${sonarHost}/project/issues?id=${encodeURIComponent(projectKey)}` +
               `&pullRequest=${prNumber}&open=${encodeURIComponent(issueKey)}` +
               `&issues=${encodeURIComponent(issueKey)}`;
-            const ruleCell = (i) =>
-              i.key ? `[\`${i.rule}\`](${sonarLink(i.key)})` : `\`${i.rule}\``;
+            const componentCell = (i) =>
+              (i.key && i.line == null)
+                ? `[\`${i.component}\`](${sonarLink(i.key)})`
+                : `\`${i.component}\``;
+            const lineCell = (i) => {
+              if (i.line == null) return '—';
+              return i.key ? `[${i.line}](${sonarLink(i.key)})` : String(i.line);
+            };
 
             const formatTable = (issues) => {
               const grouped = {};
@@ -263,7 +272,7 @@ jobs:
                 for (const i of list) {
                   const msg = i.message.length > 80
                     ? i.message.slice(0, 77) + '...' : i.message;
-                  out += `| ${ruleCell(i)} | \`${i.component}\` | ${i.line || '—'} | ${msg} |\n`;
+                  out += `| \`${i.rule}\` | ${componentCell(i)} | ${lineCell(i)} | ${msg} |\n`;
                 }
                 out += '\n';
               }
