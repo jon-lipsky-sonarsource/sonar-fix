@@ -597,13 +597,20 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY || (inputs.anthropic-base-url != '' && 'dummy' || '') }}
-          # claude-code-action refuses to run when the workflow's actor is a
-          # bot unless the bot login is on this list. The SonarCloud bot
-          # comment that fires our auto-fix loop triggers as exactly that
-          # kind of bot-actor event, so we have to allow it explicitly.
-          # Reads from the same source as the if filter and concurrency
-          # group, so changing vars.SONAR_BOT_LOGIN once propagates here too.
-          allowed_bots: ${{ vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]' }}
+          # claude-code-action refuses to run when the workflow's actor is
+          # a bot unless the bot login is on this list. For an
+          # issue_comment-triggered workflow the actor IS the comment
+          # author — so we get one of: SonarCloud's QG bot, SonarCloud's
+          # reviewer-guide bot (`sonarclouddev<N>[bot]`, with a tenant-
+          # specific suffix number we can't hardcode), or a human via
+          # /sonar-fix. The caller's job-level `if:` filter has already
+          # gated the trigger to those three sources, so trusting
+          # github.actor here is safe.
+          #
+          # The configured QG bot login (vars.SONAR_BOT_LOGIN) is also
+          # passed for explicit documentation; in practice github.actor
+          # already covers it when QG bot triggers.
+          allowed_bots: ${{ format('{0},{1}', vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]', github.actor) }}
 
           prompt: |
             Fix the SonarQube issues listed below in this pull request.
@@ -1062,13 +1069,21 @@ jobs:
           # CI runner, reconsider this knob.
           sandbox: danger-full-access
           safety-strategy: drop-sudo
-          # Mirrors claude-code-action's allowed_bots: lets the
-          # SonarCloud bot's PR comment trigger this action without
-          # bouncing on the write-access check. Reads from the same
-          # source as the if filter so changing vars.SONAR_BOT_LOGIN
-          # once propagates here too.
+          # codex-action refuses bot-actor triggers unless the actor
+          # login appears in allow-bot-users. For an issue_comment
+          # event the actor IS the comment author, so we get one of:
+          # SonarCloud's QG bot, SonarCloud's reviewer-guide bot
+          # (`sonarclouddev<N>[bot]`, with a tenant-specific suffix
+          # number we can't hardcode), or a human via /sonar-fix. The
+          # caller's job-level `if:` filter has already gated the
+          # trigger to those three sources, so trusting github.actor
+          # here is safe — defense already enforced one layer up.
+          #
+          # The configured QG bot login is also passed for explicit
+          # documentation; github.actor already covers it when QG bot
+          # triggers.
           allow-bots: 'true'
-          allow-bot-users: ${{ vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]' }}
+          allow-bot-users: ${{ format('{0},{1}', vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]', github.actor) }}
           # No --max-turns equivalent in codex exec; runaway protection
           # comes from approval_policy = "never" in config.toml (no
           # human gate to accidentally hang on) plus the natural
