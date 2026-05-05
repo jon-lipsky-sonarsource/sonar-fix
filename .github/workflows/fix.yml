@@ -685,6 +685,28 @@ jobs:
             TOKEN="$DEFAULT_TOKEN"
           fi
 
+          # actions/checkout@v4 sets a persistent
+          # `http.https://github.com/.extraheader` config carrying an
+          # AUTHORIZATION header derived from the workflow's
+          # GITHUB_TOKEN. That header is sent on every git request from
+          # this runner, so our PAT-in-the-URL ends up competing with a
+          # GITHUB_TOKEN-in-the-extraheader for the actual push. When
+          # the extraheader's GITHUB_TOKEN wins, the push is
+          # effectively attributed to github-actions[bot], GHA's
+          # recursive-trigger protection kicks in, and no
+          # `pull_request: synchronize` event fires — the consumer's
+          # build doesn't re-run, SonarCloud doesn't re-analyze, and
+          # the post-fix loop stalls with a stale triage report.
+          #
+          # claude-code-action apparently clears this during its own
+          # auth handling (Claude pushes fire downstream cleanly).
+          # codex-action doesn't, which is why the Codex path stalled.
+          # Unsetting it explicitly here makes only the URL credential
+          # remain, so the push is PAT-attributed and downstream events
+          # fire as expected. No-op if the extraheader is already
+          # absent.
+          git config --local --unset-all http.https://github.com/.extraheader || true
+
           git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${GH_REPO}.git"
           git fetch origin "$PR_BRANCH" --quiet
           NEW_COMMITS=$(git rev-list --count "origin/$PR_BRANCH..HEAD" 2>/dev/null || echo 0)
@@ -1215,6 +1237,28 @@ jobs:
             echo "::warning::AGENT_PUSH_TOKEN not set. Falling back to GITHUB_TOKEN. Pushes will succeed but won't trigger downstream workflows (per GHA's recursive-trigger protection), so the auto-fix loop stalls after one fix unless someone re-comments /sonar-fix. To get full loop behaviour, add a PAT secret AGENT_PUSH_TOKEN — see README Phase 1."
             TOKEN="$DEFAULT_TOKEN"
           fi
+
+          # actions/checkout@v4 sets a persistent
+          # `http.https://github.com/.extraheader` config carrying an
+          # AUTHORIZATION header derived from the workflow's
+          # GITHUB_TOKEN. That header is sent on every git request from
+          # this runner, so our PAT-in-the-URL ends up competing with a
+          # GITHUB_TOKEN-in-the-extraheader for the actual push. When
+          # the extraheader's GITHUB_TOKEN wins, the push is
+          # effectively attributed to github-actions[bot], GHA's
+          # recursive-trigger protection kicks in, and no
+          # `pull_request: synchronize` event fires — the consumer's
+          # build doesn't re-run, SonarCloud doesn't re-analyze, and
+          # the post-fix loop stalls with a stale triage report.
+          #
+          # claude-code-action apparently clears this during its own
+          # auth handling (Claude pushes fire downstream cleanly).
+          # codex-action doesn't, which is why the Codex path stalled.
+          # Unsetting it explicitly here makes only the URL credential
+          # remain, so the push is PAT-attributed and downstream events
+          # fire as expected. No-op if the extraheader is already
+          # absent.
+          git config --local --unset-all http.https://github.com/.extraheader || true
 
           git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${GH_REPO}.git"
           git fetch origin "$PR_BRANCH" --quiet
