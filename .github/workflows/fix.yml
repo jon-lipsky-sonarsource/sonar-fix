@@ -949,13 +949,37 @@ jobs:
           fi
           echo "No proxy configured — Codex will call OpenAI directly."
 
-      # When proxying through a virtual-key gateway (Portkey-style),
-      # OPENAI_API_KEY is unused for actual auth — the gateway reads
-      # the virtual key from http_headers instead. But codex-action's
-      # `openai-api-key` input is required to start its local Responses
-      # API proxy bookkeeping; pass a placeholder so the action proceeds.
-      # When OPENAI_API_KEY IS set in secrets (direct OpenAI or
-      # Helicone forwarding the real key), use it as-is.
+      # The Codex CLI reads its bearer token from $OPENAI_API_KEY at
+      # request time (per `env_key = "OPENAI_API_KEY"` on the
+      # [model_providers.gateway] block we wrote into config.toml a few
+      # steps back). codex-action takes its `openai-api-key` input but
+      # consumes it internally for its local Responses API proxy — it
+      # does NOT export it as an env var for the codex exec call that
+      # follows. So without this push, the env_key lookup at request
+      # time finds nothing and the gateway sees an empty Authorization
+      # header.
+      #
+      # When OPENAI_API_KEY is set in secrets (real OpenAI key for
+      # direct or Helicone use, OR a Portkey virtual key like pk_xxxxx
+      # that Portkey resolves to the real provider key), preserve it.
+      # When unset, push "dummy" — works for the rare gateway that
+      # ignores the bearer entirely (e.g., a custom-header-auth proxy
+      # configured via OPENAI_CUSTOM_HEADERS).
+      #
+      # Skipped in direct-OpenAI mode because codex-action's local
+      # proxy handles auth correctly when our config.toml doesn't
+      # override `model_provider`.
+      - name: Configure OpenAI endpoint (proxy support)
+        if: inputs.openai-base-url != ''
+        env:
+          API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -n "$API_KEY" ]; then
+            echo "OPENAI_API_KEY=$API_KEY" >> "$GITHUB_ENV"
+          else
+            echo "OPENAI_API_KEY=dummy" >> "$GITHUB_ENV"
+          fi
+
       - name: Run Codex to fix issues
         uses: openai/codex-action@v1
         with:
