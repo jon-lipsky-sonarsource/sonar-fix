@@ -232,6 +232,21 @@ jobs:
               MINOR: '🔵', INFO: '⚪'
             };
 
+            // Build a deep link to each issue in SonarCloud / SonarQube
+            // Cloud. The `open` query parameter highlights and opens the
+            // issue in the side panel; `pullRequest` scopes the issue list
+            // to this PR's analysis. Falls back to a plain code span if the
+            // issue's `key` field is missing for some reason.
+            const sonarHost = '${{ inputs.sonar-host-url }}'.replace(/\/+$/, '');
+            const projectKey = '${{ inputs.sonar-project-key }}';
+            const prNumber = ${{ inputs.pr-number }};
+            const sonarLink = (issueKey) =>
+              `${sonarHost}/project/issues?id=${encodeURIComponent(projectKey)}` +
+              `&pullRequest=${prNumber}&open=${encodeURIComponent(issueKey)}` +
+              `&issues=${encodeURIComponent(issueKey)}`;
+            const ruleCell = (i) =>
+              i.key ? `[\`${i.rule}\`](${sonarLink(i.key)})` : `\`${i.rule}\``;
+
             const formatTable = (issues) => {
               const grouped = {};
               for (const i of issues) {
@@ -248,7 +263,7 @@ jobs:
                 for (const i of list) {
                   const msg = i.message.length > 80
                     ? i.message.slice(0, 77) + '...' : i.message;
-                  out += `| \`${i.rule}\` | \`${i.component}\` | ${i.line || '—'} | ${msg} |\n`;
+                  out += `| ${ruleCell(i)} | \`${i.component}\` | ${i.line || '—'} | ${msg} |\n`;
                 }
                 out += '\n';
               }

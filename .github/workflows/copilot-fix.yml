@@ -148,11 +148,24 @@ jobs:
               MINOR: '🔵', INFO: '⚪'
             };
 
+            // Deep-link each issue to its detail page in SonarCloud /
+            // SonarQube Cloud. Falls back to a plain code span when the
+            // issue's `key` field is missing.
+            const sonarHost = '${{ inputs.sonar-host-url }}'.replace(/\/+$/, '');
+            const projectKey = '${{ inputs.sonar-project-key }}';
+            const prNumber = ${{ inputs.pr-number }};
+            const sonarLink = (issueKey) =>
+              `${sonarHost}/project/issues?id=${encodeURIComponent(projectKey)}` +
+              `&pullRequest=${prNumber}&open=${encodeURIComponent(issueKey)}` +
+              `&issues=${encodeURIComponent(issueKey)}`;
+            const ruleSpan = (i) =>
+              i.key ? `[\`${i.rule}\`](${sonarLink(i.key)})` : `\`${i.rule}\``;
+
             const formatList = (issues) => {
               let out = '';
               for (const i of issues) {
                 const emoji = severityEmoji[i.severity] || '❓';
-                out += `- ${emoji} **\`${i.rule}\`** in \`${i.component}\``;
+                out += `- ${emoji} **${ruleSpan(i)}** in \`${i.component}\``;
                 if (i.line) out += `:${i.line}`;
                 out += ` — ${i.message}\n`;
               }
