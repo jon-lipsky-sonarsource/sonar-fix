@@ -53,7 +53,11 @@ outputs:
     description: "Whether any fixable issues were found"
     value: ${{ steps.triage.outputs.has_auto_fix }}
   agent:
-    description: "Which agent to use (claude, copilot, both)"
+    description: >
+      Normalized comma-separated agent list — any combination of `claude`,
+      `copilot`, `codex`. The `all` keyword is expanded to its canonical
+      members before this output is set, so downstream `if:` filters can
+      match with a simple `contains()`.
     value: ${{ steps.triage.outputs.agent }}
   issues_json:
     description: "Full triaged issues JSON"

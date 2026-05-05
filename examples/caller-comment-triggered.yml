@@ -25,18 +25,26 @@
 #     Administration → Pull Requests → Integration with GitHub → Enable summary
 #   - Repository secret: SONAR_TOKEN
 #   - Repository variables: SONAR_PROJECT_KEY, SONAR_ORG
-#   - .github/sonar-fix-config.yml with `agent: claude|copilot|both` (or
-#     rely on the central default at config/default.yml in this repo)
+#   - .github/sonar-fix-config.yml with `agent:` set to `claude`, `copilot`,
+#     `codex`, `all`, or any comma-separated combination — or rely on the
+#     central default at config/default.yml in this repo
 #
-# For the Claude path (`agent: claude`):
+# For the Claude path (`agent` includes `claude`):
 #   - Repository secret: ANTHROPIC_API_KEY (or skip if proxying via Portkey)
 #   - Repository secret: AGENT_PUSH_TOKEN (PAT — required for full loop)
 #   - Claude Code GitHub App installed (https://github.com/apps/claude)
 #
-# For the Copilot path (`agent: copilot`):
+# For the Copilot path (`agent` includes `copilot`):
 #   - Repository secret: COPILOT_PAT
 #   - Copilot Coding Agent enabled on the repo
 #   - SonarQube MCP configured in Copilot's settings
+#
+# For the Codex path (`agent` includes `codex`):
+#   - Repository secret: OPENAI_API_KEY
+#   - Repository secret: AGENT_PUSH_TOKEN (PAT — required for full loop;
+#     same one Claude uses, since both push from the runner)
+#   - (Optional) vars.OPENAI_BASE_URL + secrets.OPENAI_CUSTOM_HEADERS
+#     when routing through Portkey/Helicone/internal proxy
 #
 # Bot login: defaults to `sonarqubecloud[bot]` (the current SonarCloud /
 # SonarQube Cloud bot login). Override by setting a `SONAR_BOT_LOGIN`
@@ -287,15 +295,19 @@ jobs:
       pr-number: ${{ fromJSON(needs.detect-and-resolve.outputs.pr_number) }}
       pr-branch: ${{ needs.detect-and-resolve.outputs.pr_branch }}
       run-sonar-scan: false   # Analysis already ran — SonarCloud told us so!
-      # The reusable workflow accepts the union of inputs for both agent
-      # paths. Inputs that don't apply to the active agent are silently
-      # ignored — leave them in place so switching `agent:` in
+      # The reusable workflow accepts the union of inputs across all
+      # agent paths. Inputs that don't apply to the active agent are
+      # silently ignored — leave them in place so switching `agent:` in
       # sonar-fix-config.yml is the only edit needed when changing paths.
       #
-      # Claude-path inputs (used when `agent: claude` or `both`):
+      # Claude-path inputs (used when `agent` includes `claude`):
       enable-agentic-analysis: true
       anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}   # empty = direct
       show-full-output: ${{ vars.SHOW_FULL_OUTPUT == 'true' }}
       # claude-model: "claude-sonnet-4-6"
       # config-path: ".github/sonar-fix-config.yml"
+      #
+      # Codex-path inputs (used when `agent` includes `codex`):
+      openai-base-url: ${{ vars.OPENAI_BASE_URL }}         # empty = direct
+      codex-model: ${{ vars.CODEX_MODEL }}                 # empty = Codex default
     secrets: inherit
