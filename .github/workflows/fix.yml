@@ -223,9 +223,22 @@ jobs:
       agent: ${{ steps.triage.outputs.agent }}
       issues_json: ${{ steps.triage.outputs.issues_json }}
     steps:
+      # Check out the consumer repo at the PR branch (not the default
+      # ref that issue_comment events would otherwise resolve to). This
+      # makes the consumer's per-PR `.github/sonar-fix-config.yml`
+      # take effect for that PR's sonar-fix runs — useful when a PR
+      # both introduces issues AND switches the agent (e.g. for A/B
+      # testing different agents in parallel branches). Without this,
+      # the agent-dispatch decision reads main's config regardless of
+      # what the PR ships.
+      #
+      # The agent-fix jobs further down already check out the PR
+      # branch by name; this just brings scan-and-triage in line so
+      # config and code come from the same ref.
       - name: Checkout calling repo
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.pr-branch }}
           fetch-depth: 0
 
       - name: Run SonarQube scan
