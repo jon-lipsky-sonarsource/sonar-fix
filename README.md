@@ -157,7 +157,7 @@ In the test repo: **Settings → Secrets and variables → Actions → Variables
 
 | Variable            | Description                       |
 |---------------------|-----------------------------------|
-| `SONAR_PROJECT_KEY` | Your SonarQube project key        |
+| `SONAR_PROJECT_KEY` | Your SonarQube project key. Either this or `COPILOT_MCP_SONAR_PROJECT_KEY` (same value, different name) — the example callers fall back to the latter when this isn't set. If you're running Copilot you already need the prefixed name for the Copilot MCP config, so you can skip this variable. |
 
 ### 2.3 Trigger your first fix manually
 

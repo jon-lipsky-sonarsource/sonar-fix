@@ -52,7 +52,7 @@ jobs:
   sonar-fix:
     uses: my-org/sonar-fix/.github/workflows/fix.yml@v1
     with:
-      sonar-project-key: ${{ vars.SONAR_PROJECT_KEY }}
+      sonar-project-key: ${{ vars.SONAR_PROJECT_KEY || vars.COPILOT_MCP_SONAR_PROJECT_KEY }}
       sonar-org: ${{ vars.SONAR_ORG || vars.COPILOT_MCP_SONAR_ORG }}
       pr-number: ${{ github.event.pull_request.number }}
       pr-branch: ${{ github.head_ref }}
