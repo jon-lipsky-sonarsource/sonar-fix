@@ -855,6 +855,21 @@ jobs:
           # that masked itself behind earlier failures.
 
           # 1. Top-level scalars
+          #
+          # We do NOT write `model_provider` here, even when proxying.
+          # The codex-action's writeProxyConfig step runs after this
+          # one and unconditionally PREPENDS its own
+          # `model_provider = "codex-action-responses-proxy"` line at
+          # the very top of the file (see the action's
+          # src/writeProxyConfig.ts). Writing our own top-level
+          # model_provider produces a TOML duplicate-key parse error.
+          #
+          # Instead we keep our [model_providers.gateway] table in this
+          # file (so codex CLI knows what "gateway" resolves to) and
+          # override the active provider selection via a `-c` CLI flag
+          # in the action's codex-args input below. The `-c` flag is
+          # global = true in codex-rs, so it applies on `exec` and
+          # wins over whatever config.toml says.
           {
             # Set approval_policy to "never" so codex exec never pauses
             # for human approval in CI. Pairs with sandbox: danger-full-access
@@ -863,12 +878,6 @@ jobs:
             # ephemeral CI runner that's already wrapped in bubblewrap +
             # drop-sudo by the action itself.
             echo 'approval_policy = "never"'
-            # When proxying, override the default provider so codex CLI
-            # bypasses the action's local Responses API proxy and talks
-            # directly to the gateway defined further down in this file.
-            if [ -n "$OPENAI_BASE_URL" ]; then
-              echo 'model_provider = "gateway"'
-            fi
             echo ''
           } > "$CONFIG"
 
@@ -1065,12 +1074,15 @@ jobs:
           # human gate to accidentally hang on) plus the natural
           # completion of the task. If cost becomes an issue, switch to
           # a config-toml `model_auto_compact_token_limit` setting.
-          # codex-args intentionally omitted — the action's built-in
-          # invocation already passes --skip-git-repo-check, --cd,
-          # --output-last-message, and --sandbox. Earlier we passed
-          # `--ask-for-approval never`, but that's a global flag (not
-          # accepted on `codex exec`); approval policy now lives in
-          # config.toml instead.
+          #
+          # In proxy mode we pass `-c model_provider=gateway` here to
+          # override the action's prepended
+          # `model_provider = "codex-action-responses-proxy"` line in
+          # config.toml. The `-c / --config` flag is global = true in
+          # codex-rs and works on `exec`. Empty in direct-OpenAI mode
+          # so codex picks up the action's local-proxy provider, which
+          # is the correct path there.
+          codex-args: ${{ inputs.openai-base-url != '' && '["-c", "model_provider=gateway"]' || '' }}
           prompt: |
             Fix the SonarQube issues listed below in this pull request.
 
