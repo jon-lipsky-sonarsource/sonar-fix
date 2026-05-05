@@ -980,10 +980,31 @@ jobs:
             echo "OPENAI_API_KEY=dummy" >> "$GITHUB_ENV"
           fi
 
+      # openai-api-key handling has two regimes:
+      #
+      # Direct OpenAI (no proxy): pass the real secret. The action starts
+      # its local Responses API proxy with that key as upstream auth, and
+      # codex CLI talks to localhost:<port>. Standard path.
+      #
+      # Proxy mode (openai-base-url set): pass the literal "dummy" string,
+      # NOT the user's real key. Two reasons:
+      #   1. Our config.toml's [model_providers.gateway] makes codex CLI
+      #      bypass the action's local proxy entirely and talk directly
+      #      to the gateway. The local proxy is dead weight in this path.
+      #   2. The action starts codex-responses-api-proxy regardless, and
+      #      that proxy validates its API key against ASCII letters,
+      #      numbers, '-' or '_'. Real Portkey keys (and other gateway
+      #      credentials) often contain '.' or other separators — they
+      #      fail that validation, killing the run before Codex ever starts.
+      # The user's actual gateway credential is still wired up — it's in
+      # $OPENAI_API_KEY env (pushed to $GITHUB_ENV by the Configure
+      # OpenAI endpoint step above), where codex CLI reads it via the
+      # `env_key = "OPENAI_API_KEY"` line in our config.toml's gateway
+      # provider block.
       - name: Run Codex to fix issues
         uses: openai/codex-action@v1
         with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY || (inputs.openai-base-url != '' && 'dummy' || '') }}
+          openai-api-key: ${{ inputs.openai-base-url != '' && 'dummy' || secrets.OPENAI_API_KEY }}
           codex-home: ${{ steps.resolve-codex-home.outputs.dir }}
           model: ${{ inputs.codex-model }}
           sandbox: workspace-write
