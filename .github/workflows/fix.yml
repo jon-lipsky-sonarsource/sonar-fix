@@ -1,16 +1,14 @@
 # =============================================================================
 # Reusable Workflow: SonarQube Fix
 # =============================================================================
-# Central org-wide workflow. Dispatches one or more AI fix agents in
-# parallel: Claude Code (claude-code-action), GitHub Copilot Coding
-# Agent (out-of-band via @copilot comment), or OpenAI Codex
-# (codex-action). The consuming repo's `.github/sonar-fix-config.yml`
-# (or the central default at `config/default.yml`) selects via the
-# `agent:` field — a single value (`claude`/`copilot`/`codex`), a
-# comma-separated list (`claude,codex`), or the keyword `all`. Each
-# matching dispatch job below activates; the rest skip. Switching
-# agents is a one-line edit to that config file; the caller workflow
-# doesn't change.
+# Central org-wide workflow. Dispatches one of three AI fix agents:
+# Claude Code (claude-code-action), GitHub Copilot Coding Agent
+# (out-of-band via @copilot comment), or OpenAI Codex (codex-action).
+# The consuming repo's `.github/sonar-fix-config.yml` (or the central
+# default at `config/default.yml`) selects via the `agent:` field —
+# `claude`, `copilot`, or `codex`. The matching dispatch job below
+# activates; the rest skip. Switching agents is a one-line edit to
+# that config file; the caller workflow doesn't change.
 #
 # Supports two trigger modes:
 #   1. PR-triggered: caller fires on pull_request events, passes PR context
@@ -228,7 +226,7 @@ jobs:
       # makes the consumer's per-PR `.github/sonar-fix-config.yml`
       # take effect for that PR's sonar-fix runs — useful when a PR
       # both introduces issues AND switches the agent (e.g. for A/B
-      # testing different agents in parallel branches). Without this,
+      # testing different agents on separate branches). Without this,
       # the agent-dispatch decision reads main's config regardless of
       # what the PR ships.
       #
@@ -405,13 +403,9 @@ jobs:
   claude-fix:
     name: "Claude Fix"
     needs: scan-and-triage
-    # Triage emits `agent` as a normalized comma-separated list (e.g.
-    # "claude" or "claude,codex" or "claude,copilot,codex"). Each agent
-    # token is unique and not a substring of another, so a plain
-    # contains() is the right membership test here.
     if: |
       needs.scan-and-triage.outputs.has_auto_fix == 'true' &&
-      contains(needs.scan-and-triage.outputs.agent, 'claude')
+      needs.scan-and-triage.outputs.agent == 'claude'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR branch
@@ -732,7 +726,7 @@ jobs:
     needs: scan-and-triage
     if: |
       needs.scan-and-triage.outputs.has_auto_fix == 'true' &&
-      contains(needs.scan-and-triage.outputs.agent, 'copilot')
+      needs.scan-and-triage.outputs.agent == 'copilot'
     runs-on: ubuntu-latest
     steps:
       # Pull the central sonar-fix repo so we can inline its agent prompt
@@ -805,7 +799,7 @@ jobs:
     needs: scan-and-triage
     if: |
       needs.scan-and-triage.outputs.has_auto_fix == 'true' &&
-      contains(needs.scan-and-triage.outputs.agent, 'codex')
+      needs.scan-and-triage.outputs.agent == 'codex'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR branch

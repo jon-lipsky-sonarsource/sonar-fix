@@ -29,9 +29,8 @@ deny list → allow list → path exclusions → severity/type match
 Issues passing all filters land in the `auto_fix` bucket; everything else goes to `review_only`.
 
 ```yaml
-# Which agent(s) handle the fix dispatch.
-# Single value, comma-separated list, or the keyword "all".
-agent: claude                    # or "copilot", "codex", "claude,codex", "all"
+# Which agent handles the fix dispatch. One of: claude, copilot, codex.
+agent: claude
 
 # Issues matching ALL of these criteria are eligible for automatic fixing.
 auto_fix:
@@ -77,7 +76,7 @@ notifications:
 
 | Field | Used by | Purpose |
 |---|---|---|
-| `agent` | triage | Selects which fix-dispatch jobs run. `claude`, `copilot`, `codex`, comma-separated list, or `all`. |
+| `agent` | triage | Selects which fix-dispatch job runs. Exactly one of `claude`, `copilot`, `codex`. |
 | `auto_fix.severities` | triage | SonarQube severities eligible for automatic fixing. |
 | `auto_fix.types` | triage | SonarQube issue types eligible for automatic fixing. |
 | `auto_fix.rules.allow` | triage | Rule keys ALWAYS fixed, even if severity/type would exclude them. |
@@ -94,17 +93,13 @@ notifications:
 
 ### Switching agents
 
-Switching from Claude to Codex (or to a multi-agent run) is a one-line edit:
+Switching from one agent to another is a one-line edit:
 
 ```yaml
 agent: codex             # was: claude
-# or
-agent: claude,codex      # both run in parallel; both see the same auto-fix list
-# or
-agent: all               # all three run in parallel
 ```
 
-The caller workflow doesn't change — `fix.yml` reads `agent` from the config and dispatches whichever jobs match.
+The caller workflow doesn't change — `fix.yml` reads `agent` from the config and dispatches the matching job.
 
 ### Where filtering lives in the workflow
 

@@ -35,8 +35,6 @@ flowchart LR
 | **OpenAI Codex** | [docs/codex.md](docs/codex.md) | OpenAI API key. Runs in the GitHub Actions runner. |
 | **GitHub Copilot** | [docs/copilot.md](docs/copilot.md) | More per-repo manual setup; coding agent runs out-of-band on GitHub's infrastructure. |
 
-You can also configure multiple agents to run in parallel — see [docs/configuration.md](docs/configuration.md).
-
 **Common prerequisites** (all three paths):
 
 - A **GitHub organization** where you can create a central repo and grant other repos access to its workflows

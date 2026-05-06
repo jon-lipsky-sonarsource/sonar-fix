@@ -55,58 +55,29 @@ def deep_merge(base: dict, override: dict) -> dict:
 VALID_AGENTS = {"claude", "copilot", "codex"}
 
 
-def normalize_agent(raw: object) -> str:
+def validate_agent(raw: object) -> str:
     """
-    Normalize the `agent` field into a canonical comma-separated string of
-    `{claude, copilot, codex}` tokens.
-
-    Accepted inputs:
-      - "claude" / "copilot" / "codex"  → as-is
-      - "all"                           → "claude,copilot,codex"
-      - "claude,codex" / "claude, copilot, codex" / list form → split, trim,
-                                          dedupe, re-join
-    Order is preserved on first occurrence so deterministic dispatch order
-    follows the consumer's declaration.
+    Validate the `agent` field. Must be a single token, one of
+    {claude, copilot, codex}.
     """
-    if isinstance(raw, list):
-        tokens = [str(t).strip().lower() for t in raw]
-    else:
-        tokens = [t.strip().lower() for t in str(raw or "").split(",")]
-
-    expanded: list[str] = []
-    for tok in tokens:
-        if not tok:
-            continue
-        if tok == "all":
-            expanded.extend(["claude", "copilot", "codex"])
-        else:
-            expanded.append(tok)
-
-    seen: set[str] = set()
-    deduped: list[str] = []
-    for tok in expanded:
-        if tok in seen:
-            continue
-        if tok not in VALID_AGENTS:
-            print(
-                f"::error::Unknown agent token '{tok}' — must be one of "
-                f"{sorted(VALID_AGENTS)}, or the keyword 'all'.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        seen.add(tok)
-        deduped.append(tok)
-
-    if not deduped:
+    if not isinstance(raw, str) or not raw.strip():
         print(
             "::error::No agent specified — set `agent:` in your "
-            "sonar-fix-config.yml to a value like 'claude', 'codex', "
-            "'claude,codex', or 'all'.",
+            f"sonar-fix-config.yml to one of {sorted(VALID_AGENTS)}.",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    return ",".join(deduped)
+    agent = raw.strip().lower()
+    if agent not in VALID_AGENTS:
+        print(
+            f"::error::Unknown agent {raw!r} — must be one of "
+            f"{sorted(VALID_AGENTS)}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    return agent
 
 
 def load_config(config_path: str, overrides_path: str | None = None) -> dict:
@@ -129,7 +100,7 @@ def load_config(config_path: str, overrides_path: str | None = None) -> dict:
     # which shouldn't happen with the shipped central default — kept
     # as a safety net so a malformed central config doesn't crash.
     config.setdefault("agent", "claude")
-    config["agent"] = normalize_agent(config["agent"])
+    config["agent"] = validate_agent(config["agent"])
     config.setdefault("auto_fix", {})
     config["auto_fix"].setdefault("severities", ["BLOCKER", "CRITICAL"])
     config["auto_fix"].setdefault("types", ["BUG", "CODE_SMELL"])

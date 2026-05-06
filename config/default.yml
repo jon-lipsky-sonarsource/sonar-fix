@@ -15,15 +15,11 @@
 # ---------------------------------------------------------------------------
 # Agent selection
 # ---------------------------------------------------------------------------
-# Which AI agent(s) to use for fixing. Accepts a single value or a
-# comma-separated list. When multiple agents are listed, each gets its own
-# parallel dispatch job — they all see the same auto-fix issue list.
+# Which AI agent to use for fixing. One of:
 #
-#   - "claude"          → Claude Code (in the Actions runner, via claude-code-action)
-#   - "copilot"         → GitHub Copilot Coding Agent (out-of-band via @copilot comment)
-#   - "codex"           → OpenAI Codex CLI (in the Actions runner, via codex-action)
-#   - "all"             → keyword expanding to "claude,copilot,codex"
-#   - "claude,codex"    → any comma-separated combination
+#   - "claude"   → Claude Code (in the Actions runner, via claude-code-action)
+#   - "copilot"  → GitHub Copilot Coding Agent (out-of-band via @copilot comment)
+#   - "codex"    → OpenAI Codex CLI (in the Actions runner, via codex-action)
 agent: claude
 
 # ---------------------------------------------------------------------------

@@ -48,11 +48,11 @@ flowchart TB
 
   j2["post-triage-comment<br/>PR comment listing the<br/>auto-fix queue + review-only issues"]
 
-  subgraph j3["fix dispatch (agent-conditional, parallel)"]
+  subgraph j3["fix dispatch (one of three, agent-conditional)"]
     direction LR
-    claude["claude-fix<br/><i>if 'claude' ∈ agent</i><br/><br/>Claude Code in runner<br/>with SonarQube MCP sidecar;<br/>workflow pushes commits"]
-    copilot["copilot-fix<br/><i>if 'copilot' ∈ agent</i><br/><br/>posts @copilot comment;<br/>Copilot agent runs out-of-band<br/>and pushes commits itself"]
-    codex["codex-fix<br/><i>if 'codex' ∈ agent</i><br/><br/>OpenAI Codex CLI in runner<br/>with SonarQube MCP sidecar<br/>(config.toml-based);<br/>workflow pushes commits"]
+    claude["claude-fix<br/><i>if agent == 'claude'</i><br/><br/>Claude Code in runner<br/>with SonarQube MCP sidecar;<br/>workflow pushes commits"]
+    copilot["copilot-fix<br/><i>if agent == 'copilot'</i><br/><br/>posts @copilot comment;<br/>Copilot agent runs out-of-band<br/>and pushes commits itself"]
+    codex["codex-fix<br/><i>if agent == 'codex'</i><br/><br/>OpenAI Codex CLI in runner<br/>with SonarQube MCP sidecar<br/>(config.toml-based);<br/>workflow pushes commits"]
   end
 
   trig --> j1
@@ -62,13 +62,13 @@ flowchart TB
 
 | Job | Always runs? | Description |
 |---|---|---|
-| `scan-and-triage` | Yes | Optionally runs the SonarQube scanner (skipped via `run-sonar-scan: false`), then runs the triage composite action. Outputs the categorized issue list and the normalized `agent` value. |
+| `scan-and-triage` | Yes | Optionally runs the SonarQube scanner (skipped via `run-sonar-scan: false`), then runs the triage composite action. Outputs the categorized issue list and the validated `agent` value. |
 | `post-triage-comment` | Yes | Posts the unified triage comment on the PR — auto-fix queue plus review-only items. Runs even when the auto-fix bucket is empty (the comment shows what was found). |
-| `claude-fix` | If `'claude' ∈ agent` | Runs Claude Code in the runner with the SonarQube MCP server attached as a Docker sidecar. The workflow's "Push agent commits" step pushes the agent's commits. |
-| `copilot-fix` | If `'copilot' ∈ agent` | Posts an `@copilot` comment with the issue list and the inlined central agent prompt. Copilot's coding agent picks it up out-of-band and pushes commits via its own GitHub App identity. |
-| `codex-fix` | If `'codex' ∈ agent` | Runs the OpenAI Codex CLI in the runner via `openai/codex-action@v1`, with the SonarQube MCP server configured via `$CODEX_HOME/config.toml`. The workflow pushes the agent's commits, identical to the Claude path. |
+| `claude-fix` | If `agent == 'claude'` | Runs Claude Code in the runner with the SonarQube MCP server attached as a Docker sidecar. The workflow's "Push agent commits" step pushes the agent's commits. |
+| `copilot-fix` | If `agent == 'copilot'` | Posts an `@copilot` comment with the issue list and the inlined central agent prompt. Copilot's coding agent picks it up out-of-band and pushes commits via its own GitHub App identity. |
+| `codex-fix` | If `agent == 'codex'` | Runs the OpenAI Codex CLI in the runner via `openai/codex-action@v1`, with the SonarQube MCP server configured via `$CODEX_HOME/config.toml`. The workflow pushes the agent's commits, identical to the Claude path. |
 
-Each fix-dispatch job is gated by `if: contains(agent, '<name>')`, which is safe because no agent name is a substring of another. Multiple dispatch jobs can run in parallel — they all see the same auto-fix issue list from `scan-and-triage`.
+Exactly one fix-dispatch job runs per `sonar-fix` invocation — the one matching the `agent` value from the consumer's config. Concurrent agents fixing the same PR would produce non-deterministic, often unmergeable diffs, so multi-agent execution is intentionally not supported.
 
 ---
 
@@ -115,7 +115,7 @@ Inputs flagged for a single agent are silently ignored by the others, so callers
 1. Reads the consumer's `.github/sonar-fix-config.yml` if present, else falls back to `config/default.yml` from the central repo.
 2. Fetches PR issues from the SonarQube API using `SONAR_TOKEN`.
 3. Applies the filter priority chain — **deny list → allow list → path exclusions → severity/type match**. Issues passing all filters land in `auto_fix`; everything else lands in `review_only`.
-4. Normalizes the `agent` field — `all` expands to `claude,copilot,codex`, unknown tokens hard-fail with a clear error, comma lists round-trip cleanly with deterministic first-occurrence ordering.
+4. Validates the `agent` field — must be exactly one of `claude`, `copilot`, or `codex`. Anything else hard-fails with a clear error.
 5. Caps the auto-fix bucket at `guardrails.max_issues_per_run`; overflow goes to `review_only`.
 6. Writes the categorized JSON to `$GITHUB_OUTPUT` for downstream jobs.
 

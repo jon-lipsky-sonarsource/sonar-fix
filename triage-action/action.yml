@@ -54,10 +54,7 @@ outputs:
     value: ${{ steps.triage.outputs.has_auto_fix }}
   agent:
     description: >
-      Normalized comma-separated agent list — any combination of `claude`,
-      `copilot`, `codex`. The `all` keyword is expanded to its canonical
-      members before this output is set, so downstream `if:` filters can
-      match with a simple `contains()`.
+      Validated agent identifier — one of `claude`, `copilot`, `codex`.
     value: ${{ steps.triage.outputs.agent }}
   issues_json:
     description: "Full triaged issues JSON"

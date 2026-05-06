@@ -67,11 +67,10 @@ config/
   deny list → allow list → path exclusions → severity/type match. Issues that
   pass are `auto_fix`; everything else is `review_only`.
 
-- The `agent` field is a comma-separated list of any of `claude`, `copilot`,
-  `codex`. The triage script normalizes input — `all` expands to all three,
-  unknown tokens hard-fail. Each fix job's `if:` filter uses `contains()` to
-  test membership, which is safe because no agent name is a substring of
-  another.
+- The `agent` field selects exactly one of `claude`, `copilot`, `codex`.
+  Each fix job's `if:` filter compares with `==`. Multi-agent execution
+  is intentionally not supported — concurrent agents fixing the same PR
+  produce non-deterministic, often unmergeable diffs.
 
 - When `enable-agentic-analysis: true`, the MCP server is configured with
   `SONARQUBE_TOOLSETS=cag,projects,analysis,issues,quality-gates,rules` and
@@ -145,9 +144,9 @@ Verify:
 - Path exclusions work
 - max_issues_per_run cap is applied
 - GITHUB_OUTPUT file contains valid JSON
-- The `agent` field is normalized: `all` expands to `claude,copilot,codex`,
-  unknown tokens hard-fail with a clear error, comma lists round-trip
-  cleanly, ordering is deterministic (first-occurrence dedupe).
+- The `agent` field is validated: must be exactly one of `claude`,
+  `copilot`, or `codex`. Anything else (multi-token strings, unknown
+  values, missing) hard-fails with a clear error.
 
 Consider writing pytest unit tests that mock the SonarQube API responses
 and verify the categorization logic in isolation.
