@@ -88,10 +88,28 @@ config/
   the `codex-home:` input.
 
 - Codex has no `--max-turns` equivalent. Runaway protection on the codex-fix
-  job comes from `--ask-for-approval=never` + the natural completion of the
-  task. The `guardrails.max_turns` config field is consulted only by the
-  Claude path. If Codex token cost becomes an issue, look at adding
-  `model_auto_compact_token_limit` to the generated config.toml.
+  job comes from `approval_policy = "never"` in the generated config.toml +
+  the natural completion of the task. The `guardrails.max_turns` config
+  field is consulted only by the Claude path. If Codex token cost becomes
+  an issue, look at adding `model_auto_compact_token_limit` to the
+  generated config.toml.
+
+- **The push step explicitly unsets `http.https://github.com/.extraheader`
+  before pushing.** Non-obvious gotcha. `actions/checkout@v4` sets a
+  persistent extraheader containing `AUTHORIZATION: basic <encoded
+  GITHUB_TOKEN>`, sent on every git request from the runner. Our push
+  step adds a PAT to the URL, but the extraheader's GITHUB_TOKEN can
+  win the auth-resolution race. When that happens, the push is
+  effectively attributed to `github-actions[bot]`, GHA's
+  recursive-trigger protection silently drops the resulting
+  `pull_request: synchronize` event, and the consumer's build never
+  re-runs after the fix push — the post-fix loop stalls with a stale
+  triage report. claude-code-action clears the extraheader during its
+  own auth dance (which is why Claude pushes worked unaided), but
+  codex-action doesn't, so we clear it explicitly. Applied to both
+  the Claude and Codex push steps for consistency — it's a no-op when
+  the extraheader is already absent. If a fourth agent gets added,
+  this same pattern is required.
 
 ## Testing Plan
 
@@ -193,19 +211,17 @@ With `enable-agentic-analysis: true`:
 - [ ] The Copilot workflow hasn't been updated with `enable-agentic-analysis`
   support. The MCP config in `copilot-mcp-setup.json` should be updated to
   include the agentic analysis env vars.
-- [ ] Validate at end-to-end run time that `openai/codex-action`'s internal
+- [x] Validate at end-to-end run time that `openai/codex-action`'s internal
   "Write Codex proxy config" step doesn't clobber our pre-written
-  `$CODEX_HOME/config.toml`. The action's bundled JS is opaque; if it
-  overwrites instead of appending, the SonarQube MCP entry gets lost and
-  Codex runs without MCP. If observed, work around by passing the MCP
-  server entries via `codex-args: '["--config", "mcp_servers..."]'`
-  scalar overrides instead of (or in addition to) the TOML file.
-- [ ] Codex's per-MCP-server `enabled_tools` allowlist isn't set on the
-  `[mcp_servers.sonarqube]` block (we permit all). If Codex burns tokens
-  invoking irrelevant SonarQube tools, tighten to the Guide → Fix →
-  Verify protocol's set (`get_guidelines`, `show_rule`,
-  `run_advanced_code_analysis`, `search_by_signature_patterns`,
-  `get_source_code`, etc.).
+  `$CODEX_HOME/config.toml`. **Confirmed at run time that it does** —
+  the action prepends a top-level `model_provider = "codex-action-responses-proxy"`
+  line to the file before codex exec runs, which collided with our pre-written
+  `model_provider = "gateway"` and produced a duplicate-key TOML parse
+  error. Resolved by overriding the active provider via a `-c
+  model_provider=gateway` CLI flag on the codex-action's `codex-args`
+  input instead of pre-writing it; our `[model_providers.gateway]`
+  table still lives in config.toml and the `-c` flag selects it at
+  request time.
 - [ ] Add a concurrency group to the comment-triggered caller to prevent
   multiple fix runs on the same PR if SonarCloud posts multiple comments.
 - [ ] Consider adding a "re-scan after fix" step that triggers a new SonarCloud
