@@ -56,6 +56,12 @@ outputs:
     description: >
       Validated agent identifier — one of `claude`, `copilot`, `codex`.
     value: ${{ steps.triage.outputs.agent }}
+  agentic_analysis:
+    description: >
+      Whether SonarQube Agentic Analysis is enabled for this run.
+      `true` or `false`. Drives the MCP server's toolset selection and
+      the agent prompt's Guide → Fix → Verify instructions.
+    value: ${{ steps.triage.outputs.agentic_analysis }}
   issues_json:
     description: "Full triaged issues JSON"
     value: ${{ steps.triage.outputs.issues_json }}

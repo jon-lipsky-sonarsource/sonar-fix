@@ -32,6 +32,14 @@ Issues passing all filters land in the `auto_fix` bucket; everything else goes t
 # Which agent handles the fix dispatch. One of: claude, copilot, codex.
 agent: claude
 
+# Whether SonarQube Agentic Analysis is enabled for this run. Default true.
+# When true, the MCP server gets the advanced toolset and the agent runs
+# the Guide → Fix → Verify loop (calling get_guidelines before editing
+# and run_advanced_code_analysis after every fix). Set to false if your
+# SonarQube tier doesn't include Agentic Analysis, or if you want a
+# faster/cheaper run that skips the verify cycles.
+agentic_analysis: true
+
 # Issues matching ALL of these criteria are eligible for automatic fixing.
 auto_fix:
   severities: [BLOCKER, CRITICAL, MAJOR]    # BLOCKER, CRITICAL, MAJOR, MINOR, INFO
@@ -65,7 +73,6 @@ guardrails:
   max_iterations: 3              # Max fix-verify cycles per file (agentic analysis)
   max_turns: 25                  # Max Claude Code agent turns per run
   run_tests_after_fix: false     # Run project tests post-fix; revert on failure
-  verify_fixes: true             # Require run_advanced_code_analysis after every fix
 
 notifications:
   post_summary: true
@@ -77,6 +84,7 @@ notifications:
 | Field | Used by | Purpose |
 |---|---|---|
 | `agent` | triage | Selects which fix-dispatch job runs. Exactly one of `claude`, `copilot`, `codex`. |
+| `agentic_analysis` | triage / agent prompt | If `true` (default), enables SonarQube Agentic Analysis: the MCP server is configured with the advanced toolset and the agent calls `run_advanced_code_analysis` after every fix to verify regressions. Set `false` if your tier doesn't include Agentic Analysis, or for faster/cheaper runs. No effect on the Copilot path (Copilot's MCP is configured per-repo on github.com). |
 | `auto_fix.severities` | triage | SonarQube severities eligible for automatic fixing. |
 | `auto_fix.types` | triage | SonarQube issue types eligible for automatic fixing. |
 | `auto_fix.rules.allow` | triage | Rule keys ALWAYS fixed, even if severity/type would exclude them. |
@@ -87,7 +95,6 @@ notifications:
 | `guardrails.max_iterations` | agent prompt | Max fix-verify cycles per modified file when agentic analysis is enabled. |
 | `guardrails.max_turns` | Claude path | Max agent turns per run. Codex has no equivalent — see [codex.md](codex.md). |
 | `guardrails.run_tests_after_fix` | agent prompt | If `true`, agent runs project tests after fixing and reverts on failure. Requires the test suite to be runnable in the Actions runner. |
-| `guardrails.verify_fixes` | agent prompt | If `true`, agent must call `run_advanced_code_analysis` after every fix. Requires `enable-agentic-analysis: true` in the workflow. |
 | `notifications.post_summary` | post-triage-comment | Post a unified triage comment on the PR. |
 | `notifications.tag_author_on_review_only` | post-triage-comment | Tag the PR author when issues are flagged for human review. |
 

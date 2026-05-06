@@ -23,6 +23,27 @@
 agent: claude
 
 # ---------------------------------------------------------------------------
+# SonarQube Agentic Analysis
+# ---------------------------------------------------------------------------
+# When true (the default), the SonarQube MCP server is configured with the
+# advanced toolset (`cag`, `analysis`, etc.) and the agent runs the
+# Guide → Fix → Verify loop: it calls `get_guidelines` before editing and
+# `run_advanced_code_analysis` after every fix to catch regressions before
+# committing. This is the showcase path — drives the most value out of
+# Sonar's AI-powered code review.
+#
+# Set to false when:
+#   - Your SonarQube tier doesn't include Agentic Analysis (free SonarCloud
+#     tiers; SonarQube Server below the required edition). Calls to
+#     run_advanced_code_analysis will fail at the API.
+#   - You explicitly want a faster/cheaper run that skips the verify cycles
+#     and trusts the agent's fixes without re-analysis.
+#
+# Has no effect on the Copilot path — Copilot's MCP server is configured
+# per-repo on github.com and uses its own toolset selection.
+agentic_analysis: true
+
+# ---------------------------------------------------------------------------
 # Fix filters
 # ---------------------------------------------------------------------------
 # Issues matching ALL of these criteria are eligible for automatic fixing.
@@ -122,14 +143,6 @@ guardrails:
   # revert changes that cause test failures. Requires tests to be runnable
   # in the Actions runner.
   run_tests_after_fix: false
-
-  # If true, the agent must re-scan with SonarQube after fixing to verify
-  # the fix resolved the issue without introducing new ones.
-  # Requires enable-agentic-analysis: true in the workflow, which gives the
-  # agent access to run_advanced_code_analysis via the MCP server.
-  # When enabled, the agent runs the Guide → Fix → Verify loop from the
-  # SonarSource getting-started-agentic-analysis-claude-code reference.
-  verify_fixes: true
 
 # ---------------------------------------------------------------------------
 # Notifications

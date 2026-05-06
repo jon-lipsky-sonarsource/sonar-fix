@@ -72,11 +72,14 @@ config/
   is intentionally not supported — concurrent agents fixing the same PR
   produce non-deterministic, often unmergeable diffs.
 
-- When `enable-agentic-analysis: true`, the MCP server is configured with
-  `SONARQUBE_TOOLSETS=cag,projects,analysis,issues,quality-gates,rules` and
-  `SONARQUBE_ADVANCED_ANALYSIS_ENABLED=true`. The workspace is volume-mounted
+- When the consumer's `agentic_analysis: true` (the default), the MCP server
+  is configured with `SONARQUBE_TOOLSETS=cag,projects,analysis,issues,quality-gates,rules`
+  and `SONARQUBE_ADVANCED_ANALYSIS_ENABLED=true`. The workspace is volume-mounted
   at `/app/mcp-workspace:rw`. The agent prompt uses the Guide → Fix → Verify
   loop: `get_guidelines` before coding, `run_advanced_code_analysis` after.
+  Showcasing this feature is a primary goal of the project, so the default
+  is on; consumers turn it off in `sonar-fix-config.yml` only when their
+  SonarQube tier doesn't support it.
 
 - The SonarQube MCP server runs via `docker run mcp/sonarqube` inside the
   GitHub Actions runner. Claude Code receives the config via
@@ -178,7 +181,7 @@ Watch for:
 
 ### Phase 3: Validate the Guide → Fix → Verify loop
 
-With `enable-agentic-analysis: true`:
+With `agentic_analysis: true` (the default):
 - Does `get_guidelines` return relevant context before fixes?
 - Does `run_advanced_code_analysis` work on modified files?
 - Does the agent iterate when a fix introduces new issues?
@@ -207,9 +210,11 @@ With `enable-agentic-analysis: true`:
 - [ ] The `--allowedTools` list in the Claude Code step may need adjustment
   based on what tools the SonarQube MCP server actually exposes. Verify the
   tool names match.
-- [ ] The Copilot workflow hasn't been updated with `enable-agentic-analysis`
-  support. The MCP config in `copilot-mcp-setup.json` should be updated to
-  include the agentic analysis env vars.
+- [ ] The Copilot path doesn't honor the consumer's `agentic_analysis` config
+  field — Copilot's MCP config lives in github.com UI, not in our workflow.
+  The `copilot-mcp-setup.json` template could be updated to include the
+  agentic analysis env vars by default so it matches the new "on by default"
+  posture of the other paths.
 - [x] Validate at end-to-end run time that `openai/codex-action`'s internal
   "Write Codex proxy config" step doesn't clobber our pre-written
   `$CODEX_HOME/config.toml`. **Confirmed at run time that it does** —

@@ -70,7 +70,6 @@ jobs:
       pr-branch: ${{ github.head_ref }}
       run-sonar-scan: true     # Run the scan ourselves (not waiting for SonarCloud)
       # Claude-path inputs (used when `agent` includes `claude`):
-      enable-agentic-analysis: true
       anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}   # empty = direct
       show-full-output: ${{ vars.SHOW_FULL_OUTPUT == 'true' }}
       # Codex-path inputs (used when `agent` includes `codex`):

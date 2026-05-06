@@ -363,7 +363,6 @@ jobs:
       # sonar-fix-config.yml is the only edit needed when changing paths.
       #
       # Claude-path inputs (used when `agent` includes `claude`):
-      enable-agentic-analysis: true
       anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}   # empty = direct
       show-full-output: ${{ vars.SHOW_FULL_OUTPUT == 'true' }}
       # claude-model: "claude-sonnet-4-6"

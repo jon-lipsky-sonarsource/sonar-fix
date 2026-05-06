@@ -85,7 +85,6 @@ Exactly one fix-dispatch job runs per `sonar-fix` invocation — the one matchin
 | `pr-branch`         | Yes      | —                                | all     | PR head branch (caller resolves from event) |
 | `claude-model`      | No       | `claude-sonnet-4-6`              | Claude  | Claude model identifier |
 | `codex-model`       | No       | `""`                             | Codex   | Codex model identifier. Empty = let Codex pick its current default. |
-| `enable-agentic-analysis` | No | `false`                          | Claude / Codex | Enables `run_advanced_code_analysis` and the `cag` toolset on the SonarQube MCP server. Requires SonarQube Cloud Team or Enterprise. |
 | `anthropic-base-url`| No       | `""`                             | Claude  | Custom Anthropic-compatible endpoint URL. Empty = call Anthropic directly. See [gateways.md](gateways.md). |
 | `openai-base-url`   | No       | `""`                             | Codex   | Custom OpenAI-compatible endpoint URL. Empty = call OpenAI directly. See [gateways.md](gateways.md). |
 | `show-full-output`  | No       | `false`                          | Claude  | Surface the agent's tool calls in the run log; debug only. |
@@ -108,6 +107,26 @@ Inputs flagged for a single agent are silently ignored by the others, so callers
 
 ---
 
+## Variables
+
+Read by the caller workflow via `${{ vars.X }}` (URLs and non-sensitive identifiers — these can't go in Secrets because the caller can't read secrets via `vars.X`). All are GitHub Actions Variables; the Copilot path also requires its own [Copilot environment variables](copilot.md#5b-set-copilot-environment-secrets), which are a separate scope.
+
+| Variable | Scope | Used by | Description |
+|---|---|---|---|
+| `SONAR_HOST_URL` | Org | all | Sonar host URL — e.g. `https://sonarcloud.io`. Falls back to `COPILOT_MCP_SONAR_HOST_URL` when unset. |
+| `SONAR_ORG` | Org | all | SonarQube Cloud org key. Falls back to `COPILOT_MCP_SONAR_ORG` when unset. Skip for self-hosted SonarQube Server. |
+| `SONAR_PROJECT_KEY` | Repo | all | SonarQube project key. Falls back to `COPILOT_MCP_SONAR_PROJECT_KEY` when unset. |
+| `SONAR_BOT_LOGIN` | Repo | all | Optional. Override the SonarCloud bot author login matched by the comment-triggered caller. Default `sonarqubecloud[bot]`. |
+| `COPILOT_MCP_SONAR_HOST_URL` | Org | Copilot | Mirror of `SONAR_HOST_URL` with the `COPILOT_MCP_` prefix Copilot's MCP config requires. Acts as fallback for `SONAR_HOST_URL` so a Copilot install can use one name everywhere. |
+| `COPILOT_MCP_SONAR_ORG` | Org | Copilot | Same pattern for `SONAR_ORG`. |
+| `COPILOT_MCP_SONAR_PROJECT_KEY` | Repo | Copilot | Same pattern for `SONAR_PROJECT_KEY`. |
+| `ANTHROPIC_BASE_URL` | Org | Claude | Optional. Custom Anthropic-compatible endpoint URL (Portkey, Helicone, etc.). Empty = call Anthropic directly. See [gateways.md](gateways.md). |
+| `OPENAI_BASE_URL` | Org | Codex | Optional. Custom OpenAI-compatible endpoint URL. Empty = call OpenAI directly. See [gateways.md](gateways.md). |
+| `CODEX_MODEL` | Org | Codex | Optional. Codex model identifier. Empty = let Codex pick its current default. |
+| `SHOW_FULL_OUTPUT` | Repo | Claude | Optional. `true` surfaces the agent's tool calls in the run log. Debug only. |
+
+---
+
 ## The triage composite action
 
 `triage-action/` is a composite GitHub action with a Python script (`triage_sonar_issues.py`) and an `action.yml` wrapper. It:
@@ -127,7 +146,7 @@ The script is pure Python with no external dependencies beyond `PyYAML`, so it r
 
 The Claude and Codex paths attach the SonarQube MCP server (`mcp/sonarqube` Docker image) as a sidecar inside the GitHub Actions runner. Configuration:
 
-- **Toolsets** — when `enable-agentic-analysis: true`, the workflow sets `SONARQUBE_TOOLSETS=cag,projects,analysis,issues,quality-gates,rules` and `SONARQUBE_ADVANCED_ANALYSIS_ENABLED=true`. The agent prompt then uses the Guide → Fix → Verify loop calling `get_guidelines` before coding and `run_advanced_code_analysis` after.
+- **Toolsets** — when the consumer's `agentic_analysis` config field is `true` (the default), the workflow sets `SONARQUBE_TOOLSETS=cag,projects,analysis,issues,quality-gates,rules` and `SONARQUBE_ADVANCED_ANALYSIS_ENABLED=true`. The agent prompt then uses the Guide → Fix → Verify loop calling `get_guidelines` before coding and `run_advanced_code_analysis` after. When `false`, the workflow falls back to the basic toolset (`issues,projects,quality-gates,rules`) and the agent prompt skips the verify step. See [configuration.md](configuration.md).
 - **Workspace mount** — the runner's working directory is volume-mounted at `/app/mcp-workspace:rw` so the MCP server can read the agent's modified files for analysis.
 - **Per-agent attachment** — Claude Code receives the MCP config via `--mcp-config /tmp/sonar-mcp-config.json`. Codex CLI has no such flag — it reads MCP servers from `$CODEX_HOME/config.toml`, so the codex-fix job pre-creates a tmpdir, writes a `[mcp_servers.sonarqube]` table into it (TOML, not JSON), and passes that dir to `openai/codex-action` via the `codex-home:` input.
 

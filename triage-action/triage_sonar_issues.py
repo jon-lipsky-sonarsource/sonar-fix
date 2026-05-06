@@ -101,6 +101,14 @@ def load_config(config_path: str, overrides_path: str | None = None) -> dict:
     # as a safety net so a malformed central config doesn't crash.
     config.setdefault("agent", "claude")
     config["agent"] = validate_agent(config["agent"])
+    config.setdefault("agentic_analysis", True)
+    if not isinstance(config["agentic_analysis"], bool):
+        print(
+            f"::error::Invalid `agentic_analysis` value "
+            f"{config['agentic_analysis']!r} — must be true or false.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     config.setdefault("auto_fix", {})
     config["auto_fix"].setdefault("severities", ["BLOCKER", "CRITICAL"])
     config["auto_fix"].setdefault("types", ["BUG", "CODE_SMELL"])
@@ -117,7 +125,6 @@ def load_config(config_path: str, overrides_path: str | None = None) -> dict:
     config["guardrails"].setdefault("max_iterations", 3)
     config["guardrails"].setdefault("max_turns", 25)
     config["guardrails"].setdefault("run_tests_after_fix", False)
-    config["guardrails"].setdefault("verify_fixes", False)
 
     return config
 
@@ -338,10 +345,10 @@ def main():
         "review_only": review_only_issues,
         "config": {
             "agent": config["agent"],
+            "agentic_analysis": config["agentic_analysis"],
             "max_turns": config["guardrails"]["max_turns"],
             "max_iterations": config["guardrails"]["max_iterations"],
             "run_tests_after_fix": config["guardrails"]["run_tests_after_fix"],
-            "verify_fixes": config["guardrails"]["verify_fixes"],
         },
         "summary": {
             "total_issues": len(issues),
@@ -360,6 +367,7 @@ def main():
             f.write(f"has_issues={'true' if issues else 'false'}\n")
             f.write(f"has_auto_fix={'true' if auto_fix_issues else 'false'}\n")
             f.write(f"agent={config['agent']}\n")
+            f.write(f"agentic_analysis={'true' if config['agentic_analysis'] else 'false'}\n")
             # Use delimiter for multiline JSON
             f.write(f"issues_json<<ISSUES_EOF\n{json.dumps(output, indent=2)}\nISSUES_EOF\n")
 
