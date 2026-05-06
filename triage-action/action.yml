@@ -1,0 +1,88 @@
+# =============================================================================
+# Composite Action: SonarQube Issue Triage
+# =============================================================================
+# Fetches SonarQube issues for a PR, categorizes them against the fix
+# config, and outputs structured JSON for agent dispatch.
+#
+# Usage:
+#   - uses: my-org/sonar-fix/.github/actions/triage@v1
+#     with:
+#       config-path: .github/sonar-fix-config.yml
+#       project-key: my-org_my-repo
+#       branch: feature/my-branch
+#       pr-number: "42"
+#     env:
+#       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+#       SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+# =============================================================================
+
+name: "SonarQube Issue Triage"
+description: "Fetch and categorize SonarQube issues for AI fix dispatch"
+
+inputs:
+  config-path:
+    description: >
+      Path to the BASE sonar-fix-config.yml — typically
+      config/default.yml from the central sonar-fix repo. Sets the
+      filtering defaults (severities, type, allow/deny rules, paths).
+    required: true
+  overrides-path:
+    description: >
+      Optional path to a per-repo sonar-fix-config.yml whose keys are
+      deep-merged on top of the base config. Lets a consuming repo
+      override individual fields (commonly just `agent:`) without
+      having to redeclare the whole config schema. Empty or missing
+      path = no overrides applied.
+    required: false
+    default: ""
+  project-key:
+    description: "SonarQube project key"
+    required: true
+  branch:
+    description: "Git branch name"
+    required: false
+  pr-number:
+    description: "Pull request number (for SonarCloud PR analysis)"
+    required: false
+
+outputs:
+  has_issues:
+    description: "Whether any issues were found"
+    value: ${{ steps.triage.outputs.has_issues }}
+  has_auto_fix:
+    description: "Whether any fixable issues were found"
+    value: ${{ steps.triage.outputs.has_auto_fix }}
+  agent:
+    description: >
+      Validated agent identifier — one of `claude`, `copilot`, `codex`.
+    value: ${{ steps.triage.outputs.agent }}
+  agentic_analysis:
+    description: >
+      Whether SonarQube Agentic Analysis is enabled for this run.
+      `true` or `false`. Drives the MCP server's toolset selection and
+      the agent prompt's Guide → Fix → Verify instructions.
+    value: ${{ steps.triage.outputs.agentic_analysis }}
+  issues_json:
+    description: "Full triaged issues JSON"
+    value: ${{ steps.triage.outputs.issues_json }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install dependencies
+      shell: bash
+      run: pip install pyyaml --quiet
+
+    - name: Run triage
+      id: triage
+      shell: bash
+      env:
+        SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+        SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+      run: |
+        python3 "${{ github.action_path }}/triage_sonar_issues.py" \
+          --config "${{ inputs.config-path }}" \
+          --overrides "${{ inputs.overrides-path }}" \
+          --project-key "${{ inputs.project-key }}" \
+          --branch "${{ inputs.branch }}" \
+          --pr-number "${{ inputs.pr-number }}"

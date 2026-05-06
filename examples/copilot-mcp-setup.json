@@ -1,0 +1,47 @@
+{
+  "_comment": [
+    "==========================================================================",
+    "Copilot Coding Agent — SonarQube MCP Server Configuration",
+    "==========================================================================",
+    "Paste this JSON into your repository settings at:",
+    "  Settings > Code & automation > Copilot > Coding agent > MCP configuration",
+    "",
+    "Add these to the Copilot environment (Variables for non-secret values,",
+    "Secrets for the token):",
+    "  COPILOT_MCP_SONAR_TOKEN     (secret)   → Your SonarQube user token",
+    "  COPILOT_MCP_SONAR_ORG       (variable) → Your SonarQube Cloud org key",
+    "  COPILOT_MCP_SONAR_HOST_URL  (variable) → e.g. https://sonarcloud.io,",
+    "                                            https://sonarcloud.us, or",
+    "                                            your self-hosted server URL",
+    "",
+    "All names must be prefixed COPILOT_MCP_ — that's how GitHub gates which",
+    "values are exposed to the MCP config. The same names are picked up by",
+    "the sonar-fix workflow's caller as fallbacks for SONAR_TOKEN, SONAR_ORG,",
+    "and SONAR_HOST_URL, so a Copilot setup uses one set of variables for",
+    "both the MCP config here and the workflow's scanner/triage steps.",
+    "=========================================================================="
+  ],
+
+  "mcpServers": {
+    "sonarqube": {
+      "type": "local",
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--init",
+        "--pull=always",
+        "-e", "SONARQUBE_TOKEN=$SONAR_TOKEN",
+        "-e", "SONARQUBE_ORG=$SONAR_ORG",
+        "-e", "SONARQUBE_URL=$SONAR_HOST_URL"
+      ],
+      "env": {
+        "SONAR_TOKEN": "COPILOT_MCP_SONAR_TOKEN",
+        "SONAR_ORG": "COPILOT_MCP_SONAR_ORG",
+        "SONAR_HOST_URL": "COPILOT_MCP_SONAR_HOST_URL"
+      },
+      "tools": ["*"]
+    }
+  }
+}

@@ -1,0 +1,155 @@
+# =============================================================================
+# SonarQube Fix Configuration — central default
+# =============================================================================
+# This is the default config used by every consumer that does NOT ship a
+# `.github/sonar-fix-config.yml` of its own. Override per-repo by creating
+# `.github/sonar-fix-config.yml` in the consuming repo with the same schema;
+# the reusable workflow uses the consumer file when present and falls back
+# here otherwise.
+#
+# Schema:
+#   - Hierarchy: rule-level overrides > path exclusions > severity/type filters
+#   - All sections optional; missing sections inherit from this default file
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Agent selection
+# ---------------------------------------------------------------------------
+# Which AI agent to use for fixing. One of:
+#
+#   - "claude"   → Claude Code (in the Actions runner, via claude-code-action)
+#   - "copilot"  → GitHub Copilot Coding Agent (out-of-band via @copilot comment)
+#   - "codex"    → OpenAI Codex CLI (in the Actions runner, via codex-action)
+agent: claude
+
+# ---------------------------------------------------------------------------
+# SonarQube Agentic Analysis
+# ---------------------------------------------------------------------------
+# When true (the default), the SonarQube MCP server is configured with the
+# advanced toolset (`cag`, `analysis`, etc.) and the agent runs the
+# Guide → Fix → Verify loop: it calls `get_guidelines` before editing and
+# `run_advanced_code_analysis` after every fix to catch regressions before
+# committing. This is the showcase path — drives the most value out of
+# Sonar's AI-powered code review.
+#
+# Set to false when:
+#   - Your SonarQube tier doesn't include Agentic Analysis (free SonarCloud
+#     tiers; SonarQube Server below the required edition). Calls to
+#     run_advanced_code_analysis will fail at the API.
+#   - You explicitly want a faster/cheaper run that skips the verify cycles
+#     and trusts the agent's fixes without re-analysis.
+#
+# Has no effect on the Copilot path — Copilot's MCP server is configured
+# per-repo on github.com and uses its own toolset selection.
+agentic_analysis: true
+
+# ---------------------------------------------------------------------------
+# Fix filters
+# ---------------------------------------------------------------------------
+# Issues matching ALL of these criteria are eligible for automatic fixing.
+# The agent will attempt to fix them and push commits to the PR branch.
+auto_fix:
+  # Minimum severity to fix. Options: BLOCKER, CRITICAL, MAJOR, MINOR, INFO
+  severities:
+    - BLOCKER
+    - CRITICAL
+    - MAJOR
+
+  # Issue types to fix. Options: BUG, CODE_SMELL, VULNERABILITY, SECURITY_HOTSPOT
+  types:
+    - BUG
+    - CODE_SMELL
+
+  # Rule-level overrides — these take precedence over severity/type filters
+  rules:
+    # Always fix these rules (even if severity/type wouldn't match)
+    allow:
+      - "java:S1135"       # Track uses of "TODO" tags
+      - "java:S1481"       # Unused local variables
+      - "java:S106"        # Replace System.out with logger
+      - "java:S1172"       # Unused method parameters
+      - "java:S1186"       # Add a nested comment to empty methods
+      - "java:S1118"       # Utility classes should not have public constructors
+      - "java:S2095"       # Resources should be closed
+      - "java:S2259"       # Null pointers should not be dereferenced
+      - "python:S1481"     # Unused local variables
+      - "python:S905"      # Non-empty statements with no side effects
+      - "typescript:S1128"  # Unused imports
+      - "typescript:S1854"  # Dead stores
+      # Add more rules as confidence grows
+
+    # NEVER fix these rules (even if severity/type would match).
+    # These require human judgment — security-sensitive, architectural, etc.
+    deny:
+      - "java:S2076"       # OS command injection
+      - "java:S2078"       # LDAP injection
+      - "java:S2631"       # Regex complexity
+      - "java:S3649"       # SQL injection
+      - "java:S5131"       # XSS
+      - "java:S5145"       # Log injection
+      - "java:S5542"       # Encryption algorithm strength
+      - "python:S5131"     # XSS
+      - "python:S3649"     # SQL injection
+      # Catch-all: never fix any security hotspot
+      - "SECURITY_HOTSPOT:*"
+
+# ---------------------------------------------------------------------------
+# Path exclusions
+# ---------------------------------------------------------------------------
+# Files matching these globs are NEVER fixed, even if their issues
+# would otherwise qualify. The agent will still report them as PR comments.
+paths:
+  exclude:
+    - "**/*.generated.*"
+    - "**/*.g.dart"
+    - "**/generated/**"
+    - "**/migrations/**"
+    - "**/vendor/**"
+    - "**/node_modules/**"
+    - "**/*.min.js"
+    - "**/*.min.css"
+
+# ---------------------------------------------------------------------------
+# Review-only mode
+# ---------------------------------------------------------------------------
+# Issues matching these criteria are posted as informational PR comments
+# but are NOT fixed. This is the "flag for human review" bucket.
+review_only:
+  severities:
+    - MINOR
+    - INFO
+
+  types:
+    - VULNERABILITY
+    - SECURITY_HOTSPOT
+
+# ---------------------------------------------------------------------------
+# Safety guardrails
+# ---------------------------------------------------------------------------
+guardrails:
+  # Maximum number of issues to fix in a single PR run.
+  # Prevents runaway costs and overwhelming diffs.
+  max_issues_per_run: 15
+
+  # Maximum fix-scan-fix iterations (if using agentic analysis for verification).
+  # After this many cycles, the agent stops and reports remaining issues.
+  max_iterations: 3
+
+  # Maximum turns for the Claude Code agent per run.
+  # This caps the total agentic loop length.
+  max_turns: 25
+
+  # If true, the agent will run the project's test suite after fixing and
+  # revert changes that cause test failures. Requires tests to be runnable
+  # in the Actions runner.
+  run_tests_after_fix: false
+
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+notifications:
+  # Post a summary comment on the PR after the fix run completes.
+  post_summary: true
+
+  # If true, tag the PR author when issues are flagged for review-only.
+  tag_author_on_review_only: false

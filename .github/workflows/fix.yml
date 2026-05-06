@@ -1,0 +1,1256 @@
+# =============================================================================
+# Reusable Workflow: SonarQube Fix
+# =============================================================================
+# Central org-wide workflow. Dispatches one of three AI fix agents:
+# Claude Code (claude-code-action), GitHub Copilot Coding Agent
+# (out-of-band via @copilot comment), or OpenAI Codex (codex-action).
+# The consuming repo's `.github/sonar-fix-config.yml` (or the central
+# default at `config/default.yml`) selects via the `agent:` field —
+# `claude`, `copilot`, or `codex`. The matching dispatch job below
+# activates; the rest skip. Switching agents is a one-line edit to
+# that config file; the caller workflow doesn't change.
+#
+# Supports two trigger modes:
+#   1. PR-triggered: caller fires on pull_request events, passes PR context
+#   2. Comment-triggered: caller fires when SonarCloud posts its analysis
+#      comment, resolves PR context, and passes it here
+#
+# Both modes call this same reusable workflow. The caller is responsible for
+# resolving pr-number and pr-branch and passing them as inputs.
+#
+# Called from a repo like:
+#   jobs:
+#     sonar-fix:
+#       uses: my-org/sonar-fix/.github/workflows/fix.yml@v1
+#       with:
+#         sonar-project-key: my-org_my-repo
+#         pr-number: 42
+#         pr-branch: feature/my-branch
+#       secrets: inherit
+# =============================================================================
+
+name: "Reusable: SonarQube Fix"
+
+on:
+  workflow_call:
+    inputs:
+      sonar-project-key:
+        description: "SonarQube project key (e.g. my-org_my-repo)"
+        required: true
+        type: string
+      pr-number:
+        description: "Pull request number"
+        required: true
+        type: number
+      pr-branch:
+        description: "Pull request head branch name"
+        required: true
+        type: string
+      sonar-org:
+        description: "SonarQube Cloud organization key"
+        required: false
+        type: string
+        default: ""
+      config-path:
+        description: "Path to sonar-fix-config.yml (relative to calling repo)"
+        required: false
+        type: string
+        default: ".github/sonar-fix-config.yml"
+      sonar-host-url:
+        description: "SonarQube host URL"
+        required: false
+        type: string
+        default: "https://sonarcloud.io"
+      claude-model:
+        description: "Claude model to use"
+        required: false
+        type: string
+        default: "claude-sonnet-4-6"
+      codex-model:
+        description: >
+          Codex model to use (e.g. gpt-5.5). Leave empty to let Codex
+          pick its current default. Only consulted by the codex-fix
+          dispatch job.
+        required: false
+        type: string
+        default: ""
+      run-sonar-scan:
+        description: "Whether to run sonar scan (false if scan runs in a separate workflow)"
+        required: false
+        type: boolean
+        default: true
+      anthropic-base-url:
+        description: >
+          Custom Anthropic-compatible endpoint URL. Set this when routing
+          Claude Code through an API gateway (Portkey, Helicone, internal
+          proxy, etc.). Leave empty to call Anthropic directly. Pass via a
+          `vars.ANTHROPIC_BASE_URL` repo variable in the caller workflow.
+        required: false
+        type: string
+        default: ""
+      openai-base-url:
+        description: >
+          Custom OpenAI-compatible endpoint URL. Set this when routing
+          Codex through an API gateway (Portkey, Helicone, internal
+          proxy, etc.). Leave empty to call OpenAI directly. Pass via a
+          `vars.OPENAI_BASE_URL` repo variable in the caller workflow.
+          Mirrors the Anthropic equivalent above; same routing model
+          (env-var-backed HTTP headers via OPENAI_CUSTOM_HEADERS).
+        required: false
+        type: string
+        default: ""
+      show-full-output:
+        description: >
+          When true, claude-code-action surfaces the agent's full tool calls
+          and reasoning in the run log. Defaults to false because tool output
+          may incidentally include source code that triggers GHA's secret
+          masking. Useful for debugging "agent ran cleanly but produced no
+          commit" cases.
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      SONAR_TOKEN:
+        description: >
+          SonarQube user token. EITHER this OR `COPILOT_MCP_SONAR_TOKEN`
+          must be set — the workflow falls back to the latter when the
+          former is empty, so Copilot users (who already need the
+          COPILOT_MCP_-prefixed name for Copilot's MCP config) don't have
+          to set the same value twice. Claude-only users typically just
+          set this one.
+        required: false
+      COPILOT_MCP_SONAR_TOKEN:
+        description: >
+          SonarQube user token in the COPILOT_MCP_ namespace. Required by
+          Copilot's MCP server config (GitHub limits Copilot's MCP to
+          secrets with this prefix). When set, also serves as the fallback
+          for SONAR_TOKEN — so a single secret covers both paths.
+        required: false
+      ANTHROPIC_API_KEY:
+        description: >
+          Anthropic API key. Required when calling Anthropic directly. When
+          routing through a virtual-key gateway like Portkey, leave unset —
+          the workflow passes a placeholder. When routing through an
+          observability proxy like Helicone that forwards to Anthropic, set
+          this to your real Anthropic key.
+        required: false
+      ANTHROPIC_CUSTOM_HEADERS:
+        description: >
+          Optional. Extra HTTP headers for the Anthropic-compatible endpoint,
+          one per line. Typically holds the gateway's API key, e.g.
+          "x-portkey-api-key: pk_xxxxx".
+        required: false
+      OPENAI_API_KEY:
+        description: >
+          OpenAI API key. Required when `agent` includes `codex`. Used by
+          openai/codex-action to spawn its local Responses API proxy and
+          by the Codex CLI's MCP/responses calls. When routing through a
+          virtual-key gateway (Portkey-style), leave unset — the workflow
+          passes a placeholder. When routing through an observability
+          proxy that forwards to OpenAI (Helicone-style), set this to the
+          real OpenAI key.
+        required: false
+      OPENAI_CUSTOM_HEADERS:
+        description: >
+          Optional. Extra HTTP headers for the OpenAI-compatible endpoint,
+          one per line. Mirrors ANTHROPIC_CUSTOM_HEADERS for the Codex
+          path. Typically holds the gateway's virtual key, e.g.
+          "x-portkey-api-key: pk_xxxxx". Wired into the
+          `[model_providers.proxy].http_headers` block of the Codex
+          config.toml when `openai-base-url` is set.
+        required: false
+      AGENT_PUSH_TOKEN:
+        description: >
+          Optional PAT (or GitHub App installation token) used to push the
+          Claude path's commits. Required for the Claude auto-fix loop to
+          continue iterating: pushes made via this token fire `pull_request:
+          synchronize` events that re-run the consumer's build/Sonar
+          workflow, producing a new SonarCloud bot comment that re-fires
+          sonar-fix. When unset, the workflow falls back to GITHUB_TOKEN
+          — pushes succeed but downstream workflows don't auto-trigger
+          (per GHA's recursive-trigger protection), so the loop stalls
+          after one fix unless the human re-comments /sonar-fix. Set to a
+          PAT with `repo` scope (classic) or the equivalent fine-grained
+          scopes (Contents: write, Pull requests: write).
+
+          Not used by the Copilot path (Copilot pushes via its own GitHub
+          App identity, which already triggers downstream workflows).
+        required: false
+      COPILOT_PAT:
+        description: >
+          GitHub PAT used to post the @copilot comment that triggers the
+          Copilot Coding Agent. Required when `agent` includes `copilot`
+          in the consumer's sonar-fix-config.yml. Classic PAT with
+          `repo` scope from a Copilot-subscribed account; not used by
+          the Claude or Codex paths.
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  # claude-code-action uses OIDC to authenticate to Anthropic's auth backend
+  # (even when proxying — the action requests an OIDC token regardless).
+  # Without this the "Run Claude Code" step fails with:
+  #   "Could not fetch an OIDC token. Did you remember to add `id-token:
+  #    write` to your workflow permissions?"
+  id-token: write
+
+jobs:
+  # =========================================================================
+  # Job 1: Scan (optional) and Triage
+  # =========================================================================
+  scan-and-triage:
+    name: "Scan & Triage"
+    runs-on: ubuntu-latest
+    outputs:
+      has_issues: ${{ steps.triage.outputs.has_issues }}
+      has_auto_fix: ${{ steps.triage.outputs.has_auto_fix }}
+      agent: ${{ steps.triage.outputs.agent }}
+      agentic_analysis: ${{ steps.triage.outputs.agentic_analysis }}
+      issues_json: ${{ steps.triage.outputs.issues_json }}
+    steps:
+      # Check out the consumer repo at the PR branch (not the default
+      # ref that issue_comment events would otherwise resolve to). This
+      # makes the consumer's per-PR `.github/sonar-fix-config.yml`
+      # take effect for that PR's sonar-fix runs — useful when a PR
+      # both introduces issues AND switches the agent (e.g. for A/B
+      # testing different agents on separate branches). Without this,
+      # the agent-dispatch decision reads main's config regardless of
+      # what the PR ships.
+      #
+      # The agent-fix jobs further down already check out the PR
+      # branch by name; this just brings scan-and-triage in line so
+      # config and code come from the same ref.
+      - name: Checkout calling repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.pr-branch }}
+          fetch-depth: 0
+
+      - name: Run SonarQube scan
+        if: inputs.run-sonar-scan
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN || secrets.COPILOT_MCP_SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
+
+      - name: Wait for analysis
+        if: inputs.run-sonar-scan
+        run: sleep 15
+
+      # Checkout the central repo to get the composite action AND the
+      # default config (used as a fallback when the consumer doesn't ship one).
+      - name: Checkout sonar-fix repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sonar-fix
+          path: .sonar-fix-action
+          # Uses the default GITHUB_TOKEN — works for internal/public repos.
+          # For private repos, you may need a PAT.
+
+      # Always pass the central default as the BASE config. If the consumer
+      # shipped a .github/sonar-fix-config.yml, we deep-merge it on top
+      # inside the triage script — so consumer files can be as small as a
+      # single `agent: copilot` override and still get the central defaults
+      # for severity filtering, allow lists, path exclusions, etc.
+      - name: Resolve config paths
+        id: resolve-config
+        run: |
+          BASE=".sonar-fix-action/config/default.yml"
+          CONSUMER="${{ inputs.config-path }}"
+          if [ -f "$CONSUMER" ]; then
+            echo "Consumer overrides at $CONSUMER will be deep-merged on top of central default ($BASE)."
+            echo "overrides_path=$CONSUMER" >> "$GITHUB_OUTPUT"
+          else
+            echo "No consumer overrides at $CONSUMER — using central default ($BASE) only."
+            echo "overrides_path=" >> "$GITHUB_OUTPUT"
+          fi
+          echo "base_path=$BASE" >> "$GITHUB_OUTPUT"
+
+      - name: Triage issues
+        id: triage
+        uses: ./.sonar-fix-action/triage-action
+        with:
+          config-path: ${{ steps.resolve-config.outputs.base_path }}
+          overrides-path: ${{ steps.resolve-config.outputs.overrides_path }}
+          project-key: ${{ inputs.sonar-project-key }}
+          branch: ${{ inputs.pr-branch }}
+          pr-number: ${{ inputs.pr-number }}
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN || secrets.COPILOT_MCP_SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
+
+  # =========================================================================
+  # Job 2: Post triage comment listing both auto-fix queue and review-only
+  # =========================================================================
+  post-triage-comment:
+    name: "Post Triage Comment"
+    needs: scan-and-triage
+    if: needs.scan-and-triage.outputs.has_issues == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post triage comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issuesData = ${{ needs.scan-and-triage.outputs.issues_json }};
+            const autoFix = issuesData.auto_fix || [];
+            const reviewOnly = issuesData.review_only || [];
+            const summary = issuesData.summary || {};
+
+            if (autoFix.length === 0 && reviewOnly.length === 0) {
+              console.log('No issues to report.');
+              return;
+            }
+
+            const severityEmoji = {
+              BLOCKER: '🔴', CRITICAL: '🟠', MAJOR: '🟡',
+              MINOR: '🔵', INFO: '⚪'
+            };
+
+            // Build a deep link to each issue in SonarCloud / SonarQube
+            // Cloud. The `open` query parameter highlights and opens the
+            // issue in the side panel; `pullRequest` scopes the issue list
+            // to this PR's analysis. We attach the link to the location
+            // (line number, or file path when there's no line), NOT to
+            // the rule key — the rule key names a rule pattern, but the
+            // URL points at a specific occurrence at a specific location,
+            // so the location is the semantically correct anchor.
+            const sonarHost = '${{ inputs.sonar-host-url }}'.replace(/\/+$/, '');
+            const projectKey = '${{ inputs.sonar-project-key }}';
+            const prNumber = ${{ inputs.pr-number }};
+            const sonarLink = (issueKey) =>
+              `${sonarHost}/project/issues?id=${encodeURIComponent(projectKey)}` +
+              `&pullRequest=${prNumber}&open=${encodeURIComponent(issueKey)}` +
+              `&issues=${encodeURIComponent(issueKey)}`;
+            const componentCell = (i) =>
+              (i.key && i.line == null)
+                ? `[\`${i.component}\`](${sonarLink(i.key)})`
+                : `\`${i.component}\``;
+            const lineCell = (i) => {
+              if (i.line == null) return '—';
+              return i.key ? `[${i.line}](${sonarLink(i.key)})` : String(i.line);
+            };
+
+            const formatTable = (issues) => {
+              const grouped = {};
+              for (const i of issues) {
+                const sev = i.severity || 'UNKNOWN';
+                if (!grouped[sev]) grouped[sev] = [];
+                grouped[sev].push(i);
+              }
+              let out = '';
+              for (const [sev, list] of Object.entries(grouped)) {
+                const emoji = severityEmoji[sev] || '❓';
+                out += `#### ${emoji} ${sev} (${list.length})\n\n`;
+                out += '| Rule | File | Line | Message |\n';
+                out += '|------|------|------|---------|\n';
+                for (const i of list) {
+                  const msg = i.message.length > 80
+                    ? i.message.slice(0, 77) + '...' : i.message;
+                  out += `| \`${i.rule}\` | ${componentCell(i)} | ${lineCell(i)} | ${msg} |\n`;
+                }
+                out += '\n';
+              }
+              return out;
+            };
+
+            const total = summary.total_issues || (autoFix.length + reviewOnly.length);
+            let body = `## 🤖 sonar-fix — triage report\n\n`;
+            body += `Found **${total}** SonarQube issue(s) on this PR. Here's what's about to happen.\n\n`;
+
+            if (autoFix.length > 0) {
+              body += `### 🔧 Auto-fix queue (${autoFix.length})\n\n`;
+              body += `An AI agent will attempt fixes for these and push a commit. Look for a `;
+              body += `\`fix: resolve SonarQube issues\` commit shortly.\n\n`;
+              body += formatTable(autoFix);
+            }
+
+            if (reviewOnly.length > 0) {
+              body += `### 🔍 Needs human review (${reviewOnly.length})\n\n`;
+              body += `These are excluded from auto-fix per the `;
+              body += `[fix config](${{ inputs.config-path }}) (severity threshold, deny-list, `;
+              body += `path exclusion, etc.). Address them manually if needed.\n\n`;
+              body += formatTable(reviewOnly);
+            }
+
+            body += `---\n`;
+            body += `<sub>Posted by [sonar-fix](https://github.com/${{ github.repository_owner }}/sonar-fix). `;
+            body += `${total} total · ${autoFix.length} to fix · ${reviewOnly.length} for review.</sub>`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ inputs.pr-number }},
+              body
+            });
+
+  # =========================================================================
+  # Job 3: Claude Code fix
+  # =========================================================================
+  claude-fix:
+    name: "Claude Fix"
+    needs: scan-and-triage
+    if: |
+      needs.scan-and-triage.outputs.has_auto_fix == 'true' &&
+      needs.scan-and-triage.outputs.agent == 'claude'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.pr-branch }}
+          fetch-depth: 0
+
+      # Pull the central sonar-fix repo so we can inject the agent prompt
+      # without asking consumers to ship our prompt fragment in their repo.
+      - name: Checkout sonar-fix repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sonar-fix
+          path: .sonar-fix-action
+
+      # Inject the central sonar-fix agent prompt into AGENTS.md so the
+      # Claude Code action picks it up automatically. Shielded from being
+      # committed back: existing files are marked skip-worktree, new files
+      # are added to .git/info/exclude. The agent reads it from the working
+      # tree like any other AGENTS.md; git ignores our edits to it.
+      - name: Inject sonar-fix agent prompt into AGENTS.md
+        run: |
+          if [ -f AGENTS.md ]; then
+            git update-index --skip-worktree AGENTS.md
+            printf '\n\n---\n\n' >> AGENTS.md
+          else
+            echo "AGENTS.md" >> .git/info/exclude
+          fi
+          cat .sonar-fix-action/prompts/sonar-fix-agent.md >> AGENTS.md
+          echo "Injected sonar-fix agent prompt into AGENTS.md ($(wc -l < AGENTS.md) lines total)"
+
+      - name: Create MCP config
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN || secrets.COPILOT_MCP_SONAR_TOKEN }}
+          SONAR_ORG: ${{ inputs.sonar-org }}
+          SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
+          SONAR_PROJECT_KEY: ${{ inputs.sonar-project-key }}
+          ENABLE_AGENTIC: ${{ needs.scan-and-triage.outputs.agentic_analysis }}
+        run: |
+          # Determine toolsets and extra env vars based on agentic analysis flag
+          if [ "$ENABLE_AGENTIC" = "true" ]; then
+            TOOLSETS="cag,projects,analysis,issues,quality-gates,rules"
+            ADVANCED_FLAG="true"
+          else
+            TOOLSETS="issues,projects,quality-gates,rules"
+            ADVANCED_FLAG="false"
+          fi
+
+          # Get the workspace path for volume mount (agentic analysis needs this)
+          WORKSPACE_DIR="$(pwd)"
+
+          # Build docker args — always include workspace mount for file access
+          # and all env vars the MCP server needs
+          if [ -n "$SONAR_ORG" ]; then
+            # SonarQube Cloud
+            cat > /tmp/sonar-mcp-config.json << MCPEOF
+          {
+            "mcpServers": {
+              "sonarqube": {
+                "command": "docker",
+                "args": [
+                  "run", "--rm", "-i", "--init", "--pull=never",
+                  "-e", "SONARQUBE_TOKEN",
+                  "-e", "SONARQUBE_ORG",
+                  "-e", "SONARQUBE_URL",
+                  "-e", "SONARQUBE_PROJECT_KEY",
+                  "-e", "SONARQUBE_TOOLSETS",
+                  "-e", "SONARQUBE_ADVANCED_ANALYSIS_ENABLED",
+                  "-v", "${WORKSPACE_DIR}:/app/mcp-workspace:rw",
+                  "mcp/sonarqube"
+                ],
+                "env": {
+                  "SONARQUBE_TOKEN": "${SONAR_TOKEN}",
+                  "SONARQUBE_ORG": "${SONAR_ORG}",
+                  "SONARQUBE_URL": "${SONAR_HOST_URL}",
+                  "SONARQUBE_PROJECT_KEY": "${SONAR_PROJECT_KEY}",
+                  "SONARQUBE_TOOLSETS": "${TOOLSETS}",
+                  "SONARQUBE_ADVANCED_ANALYSIS_ENABLED": "${ADVANCED_FLAG}"
+                }
+              }
+            }
+          }
+          MCPEOF
+          else
+            # SonarQube Server (no org, no agentic analysis)
+            cat > /tmp/sonar-mcp-config.json << MCPEOF
+          {
+            "mcpServers": {
+              "sonarqube": {
+                "command": "docker",
+                "args": [
+                  "run", "--rm", "-i", "--init", "--pull=never",
+                  "-e", "SONARQUBE_TOKEN",
+                  "-e", "SONARQUBE_URL",
+                  "-e", "SONARQUBE_PROJECT_KEY",
+                  "-e", "SONARQUBE_TOOLSETS",
+                  "-v", "${WORKSPACE_DIR}:/app/mcp-workspace:rw",
+                  "mcp/sonarqube"
+                ],
+                "env": {
+                  "SONARQUBE_TOKEN": "${SONAR_TOKEN}",
+                  "SONARQUBE_URL": "${SONAR_HOST_URL}",
+                  "SONARQUBE_PROJECT_KEY": "${SONAR_PROJECT_KEY}",
+                  "SONARQUBE_TOOLSETS": "${TOOLSETS}"
+                }
+              }
+            }
+          }
+          MCPEOF
+          fi
+
+          echo "MCP config written with toolsets=${TOOLSETS}, agentic=${ADVANCED_FLAG}"
+          cat /tmp/sonar-mcp-config.json
+
+      - name: Pull MCP server image
+        run: docker pull mcp/sonarqube
+
+      # Optional API-gateway support (Portkey, Helicone, internal proxy, etc.).
+      # When the caller passes anthropic-base-url, export the proxy env vars
+      # so the next step's claude-code-action inherits them and the Anthropic
+      # SDK routes through the gateway. Direct-Anthropic users (no base-url)
+      # skip this entirely and see no behavior change.
+      #
+      # ANTHROPIC_AUTH_TOKEN is hardcoded to "dummy" because for the gateway
+      # patterns we support (virtual-key like Portkey, observability like
+      # Helicone), the Authorization header is either ignored by the gateway
+      # or unused — the real auth lives in ANTHROPIC_CUSTOM_HEADERS or in
+      # ANTHROPIC_API_KEY. The SDK requires *some* value, so we provide one.
+      # Catch a common setup mistake: proxy auth secrets are set, but the
+      # anthropic-base-url input is empty (typically because the user set
+      # ANTHROPIC_BASE_URL as a Secret rather than a Variable, so vars.X
+      # in the caller can't read it). Without this check the workflow
+      # silently treats the run as "direct Anthropic API" and the action's
+      # later validation produces a misleading error.
+      - name: Validate proxy config
+        if: inputs.anthropic-base-url == ''
+        env:
+          CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS }}
+        run: |
+          if [ -n "$CUSTOM_HEADERS" ]; then
+            echo "::error::ANTHROPIC_CUSTOM_HEADERS is set, but the anthropic-base-url input is empty (vars.ANTHROPIC_BASE_URL on the calling repo isn't set). This usually means ANTHROPIC_BASE_URL was created as a Secret instead of a Variable. URLs go in Variables — see README Phase 1.4."
+            exit 1
+          fi
+          echo "No proxy configured — using direct Anthropic API."
+
+      - name: Configure Anthropic endpoint (proxy support)
+        if: inputs.anthropic-base-url != ''
+        env:
+          BASE_URL: ${{ inputs.anthropic-base-url }}
+          CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS }}
+          API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          echo "ANTHROPIC_BASE_URL=$BASE_URL"                                       >> "$GITHUB_ENV"
+          echo "ANTHROPIC_AUTH_TOKEN=dummy"                                         >> "$GITHUB_ENV"
+          [ -n "$CUSTOM_HEADERS" ] && echo "ANTHROPIC_CUSTOM_HEADERS=$CUSTOM_HEADERS" >> "$GITHUB_ENV"
+          # claude-code-action validates that ANTHROPIC_API_KEY is in env before
+          # invoking Claude Code, regardless of whether you authenticate via the
+          # action's `anthropic_api_key` input. When proxying through a virtual-
+          # key gateway (no real Anthropic key in secrets), set a placeholder
+          # here so the validation passes — the gateway ignores the x-api-key
+          # header anyway. When a real key IS set (Helicone-style observability
+          # proxy or any setup that forwards to Anthropic), keep it as-is.
+          [ -z "$API_KEY" ] && echo "ANTHROPIC_API_KEY=dummy" >> "$GITHUB_ENV"
+          : # always exit 0 even when CUSTOM_HEADERS / API_KEY are empty
+
+      # When Claude Code starts and can't validate auth against api.anthropic.com
+      # (which is exactly the case when ANTHROPIC_BASE_URL points at a proxy),
+      # it falls back to its first-run onboarding flow. In a non-TTY runner that
+      # surfaces as a generic failure with no useful output. Pre-creating
+      # ~/.claude.json with `hasCompletedOnboarding: true` skips the wizard and
+      # lets the CLI proceed straight to model calls. This is documented as a
+      # standard Portkey/proxy workaround.
+      - name: Skip Claude Code onboarding (proxy users)
+        if: inputs.anthropic-base-url != ''
+        run: |
+          if [ -f "$HOME/.claude.json" ]; then
+            # The action may have written its own config — merge our flag in.
+            tmp=$(mktemp)
+            jq '. + {hasCompletedOnboarding: true}' "$HOME/.claude.json" > "$tmp"
+            mv "$tmp" "$HOME/.claude.json"
+          else
+            printf '%s\n' '{"hasCompletedOnboarding": true}' > "$HOME/.claude.json"
+          fi
+          echo "Claude Code onboarding flag set"
+
+      # anthropic_api_key:
+      #   - If ANTHROPIC_API_KEY is set, use it (direct-Anthropic OR Helicone-
+      #     style observability proxy that forwards the real key to Anthropic).
+      #   - Else if proxying via a virtual-key gateway (anthropic-base-url set,
+      #     no API_KEY secret), pass "dummy" — the gateway ignores it and uses
+      #     ANTHROPIC_CUSTOM_HEADERS for real auth.
+      #   - Else (no key, no proxy), pass empty so claude-code-action fails
+      #     with its own clear error.
+      - name: Run Claude Code to fix issues
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY || (inputs.anthropic-base-url != '' && 'dummy' || '') }}
+          # claude-code-action refuses to run when the workflow's actor is
+          # a bot unless the bot login is on this list. For an
+          # issue_comment-triggered workflow the actor IS the comment
+          # author — so we get one of: SonarCloud's QG bot, SonarCloud's
+          # reviewer-guide bot (`sonarclouddev<N>[bot]`, with a tenant-
+          # specific suffix number we can't hardcode), or a human via
+          # /sonar-fix. The caller's job-level `if:` filter has already
+          # gated the trigger to those three sources, so trusting
+          # github.actor here is safe.
+          #
+          # The configured QG bot login (vars.SONAR_BOT_LOGIN) is also
+          # passed for explicit documentation; in practice github.actor
+          # already covers it when QG bot triggers.
+          allowed_bots: ${{ format('{0},{1}', vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]', github.actor) }}
+
+          prompt: |
+            Fix the SonarQube issues listed below in this pull request.
+
+            Follow the Guide → Fix → Verify protocol described in `AGENTS.md`
+            in the repo root. That file is the single source of truth for the
+            tool sequence, rule lookup, verification cycles, commit format,
+            and guardrails. The workflow has just injected the central
+            sonar-fix instructions into it — read AGENTS.md before you start.
+
+            ${{ needs.scan-and-triage.outputs.agentic_analysis == 'true' && format('Note: agentic analysis is ENABLED for this run. When you call `run_advanced_code_analysis`, pass `branchName: "{0}"`.', inputs.pr-branch) || 'Note: agentic analysis is DISABLED for this run; skip the VERIFY step that calls `run_advanced_code_analysis` and review your changes for correctness instead.' }}
+
+            ## Issues to fix
+
+            ```json
+            ${{ toJSON(fromJSON(needs.scan-and-triage.outputs.issues_json).auto_fix) }}
+            ```
+
+          # Tool names match the @anthropic-ai/claude-agent-sdk current API
+          # (Read/Write/Edit/Glob/Grep/Bash/MultiEdit). The earlier list used
+          # legacy names (View/GlobTool/GrepTool/BatchTool/Replace) that the
+          # current Claude Code build no longer exposes — the agent would hit
+          # permission denials and stall without ever editing files.
+          claude_args: |
+            --max-turns ${{ fromJSON(needs.scan-and-triage.outputs.issues_json).config.max_turns }}
+            --model ${{ inputs.claude-model }}
+            --mcp-config /tmp/sonar-mcp-config.json
+            --allowedTools "Read,Write,Edit,MultiEdit,Glob,Grep,Bash,mcp__sonarqube__*"
+          # Default false (claude-code-action default). Surfaces the agent's
+          # tool calls and reasoning in the run log when set true — useful for
+          # debugging "agent finished cleanly but didn't fix anything" cases
+          # like the one we hit on first run. Toggle by passing show-full-output
+          # from the caller (see workflow input below) or set to true here.
+          show_full_output: ${{ inputs.show-full-output }}
+
+      # Workflow-driven push of the agent's commits. Pushing is plumbing —
+      # it shouldn't be subject to LLM whim (the first end-to-end run had the
+      # agent commit correctly but skip the push, losing the work to the
+      # ephemeral runner). Always runs after a successful agent step. No-op
+      # when the agent didn't make any new commits.
+      #
+      # Auth note: claude-code-action sets up git auth for its own use during
+      # the agent step using a short-lived OIDC-derived token, then revokes
+      # that token when its run completes. So we can't piggyback on that auth
+      # here — reconfigure the remote with the workflow's GITHUB_TOKEN, which
+      # has `contents: write` per the caller's permissions block.
+      - name: Push agent commits
+        env:
+          PR_BRANCH: ${{ inputs.pr-branch }}
+          PUSH_PAT: ${{ secrets.AGENT_PUSH_TOKEN }}
+          DEFAULT_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ -n "$PUSH_PAT" ]; then
+            echo "Using AGENT_PUSH_TOKEN — pushes will trigger downstream workflows, so the auto-fix loop will continue iterating until QG passes or the loop guard trips."
+            TOKEN="$PUSH_PAT"
+          else
+            echo "::warning::AGENT_PUSH_TOKEN not set. Falling back to GITHUB_TOKEN. Pushes will succeed but won't trigger downstream workflows (per GHA's recursive-trigger protection), so the auto-fix loop stalls after one fix unless someone re-comments /sonar-fix. To get full loop behaviour, add a PAT secret AGENT_PUSH_TOKEN — see README Phase 1."
+            TOKEN="$DEFAULT_TOKEN"
+          fi
+
+          # actions/checkout@v4 sets a persistent
+          # `http.https://github.com/.extraheader` config carrying an
+          # AUTHORIZATION header derived from the workflow's
+          # GITHUB_TOKEN. That header is sent on every git request from
+          # this runner, so our PAT-in-the-URL ends up competing with a
+          # GITHUB_TOKEN-in-the-extraheader for the actual push. When
+          # the extraheader's GITHUB_TOKEN wins, the push is
+          # effectively attributed to github-actions[bot], GHA's
+          # recursive-trigger protection kicks in, and no
+          # `pull_request: synchronize` event fires — the consumer's
+          # build doesn't re-run, SonarCloud doesn't re-analyze, and
+          # the post-fix loop stalls with a stale triage report.
+          #
+          # claude-code-action apparently clears this during its own
+          # auth handling (Claude pushes fire downstream cleanly).
+          # codex-action doesn't, which is why the Codex path stalled.
+          # Unsetting it explicitly here makes only the URL credential
+          # remain, so the push is PAT-attributed and downstream events
+          # fire as expected. No-op if the extraheader is already
+          # absent.
+          git config --local --unset-all http.https://github.com/.extraheader || true
+
+          git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${GH_REPO}.git"
+          git fetch origin "$PR_BRANCH" --quiet
+          NEW_COMMITS=$(git rev-list --count "origin/$PR_BRANCH..HEAD" 2>/dev/null || echo 0)
+          if [ "$NEW_COMMITS" = "0" ]; then
+            echo "No new commits from the agent — nothing to push."
+            exit 0
+          fi
+          echo "Pushing $NEW_COMMITS commit(s) to origin/$PR_BRANCH:"
+          git log --oneline "origin/$PR_BRANCH..HEAD"
+          git push origin "HEAD:refs/heads/$PR_BRANCH"
+
+  # =========================================================================
+  # Job 4: Copilot dispatch — post @copilot comment with the issues
+  # =========================================================================
+  # Runs only when the consumer's config (or central default) selects the
+  # Copilot path. The job posts an @copilot comment listing the auto-fix
+  # issues alongside the central agent prompt; Copilot's coding agent picks
+  # the comment up out-of-band, applies fixes, and pushes commits via its
+  # own App identity. App-identity pushes naturally trigger downstream
+  # workflows, so the loop continues without needing AGENT_PUSH_TOKEN.
+  copilot-fix:
+    name: "Copilot Fix"
+    needs: scan-and-triage
+    if: |
+      needs.scan-and-triage.outputs.has_auto_fix == 'true' &&
+      needs.scan-and-triage.outputs.agent == 'copilot'
+    runs-on: ubuntu-latest
+    steps:
+      # Pull the central sonar-fix repo so we can inline its agent prompt
+      # into the @copilot comment. Single source of truth for the protocol
+      # — improvements here apply to every consumer on the next run.
+      - name: Checkout sonar-fix repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sonar-fix
+          path: .sonar-fix-action
+
+      - name: Trigger Copilot via @copilot comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.COPILOT_PAT }}
+          script: |
+            const fs = require('fs');
+            const issuesData = ${{ needs.scan-and-triage.outputs.issues_json }};
+            const autoFix = issuesData.auto_fix || [];
+
+            if (autoFix.length === 0) return;
+
+            const agentPrompt = fs.readFileSync(
+              '.sonar-fix-action/prompts/sonar-fix-agent.md', 'utf8'
+            );
+
+            const issueList = autoFix.map(i => {
+              let entry = `- **\`${i.rule}\`** [${i.severity}] in \`${i.component}\``;
+              if (i.line) entry += `:${i.line}`;
+              entry += `\n  ${i.message}`;
+              return entry;
+            }).join('\n');
+
+            const body = [
+              `@copilot Please fix the following ${autoFix.length} SonarQube issue(s) in this pull request.`,
+              '',
+              `## Issues to fix (${autoFix.length})`,
+              '',
+              issueList,
+              '',
+              '<details>',
+              '<summary>Agent instructions</summary>',
+              '',
+              agentPrompt,
+              '',
+              '</details>',
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ inputs.pr-number }},
+              body
+            });
+
+            console.log(`Posted @copilot comment with ${autoFix.length} issues.`);
+
+  # =========================================================================
+  # Job 5: OpenAI Codex fix
+  # =========================================================================
+  # Runs Codex CLI in the runner via openai/codex-action, mirroring the
+  # Claude path's shape: same AGENTS.md prompt injection, same
+  # docker-based SonarQube MCP server, same workflow-driven commit push.
+  # Differences from Claude: MCP is configured via TOML at
+  # $CODEX_HOME/config.toml (no --mcp-config flag exists), auth is
+  # OPENAI_API_KEY-based with no OIDC, and proxy routing flows through
+  # a custom [model_providers.gateway] entry rather than a base-url env.
+  codex-fix:
+    name: "Codex Fix"
+    needs: scan-and-triage
+    if: |
+      needs.scan-and-triage.outputs.has_auto_fix == 'true' &&
+      needs.scan-and-triage.outputs.agent == 'codex'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.pr-branch }}
+          fetch-depth: 0
+
+      # Pull the central sonar-fix repo so we can inject the agent prompt
+      # without asking consumers to ship our prompt fragment in their repo.
+      - name: Checkout sonar-fix repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sonar-fix
+          path: .sonar-fix-action
+
+      # Codex reads AGENTS.md from the working tree exactly like Claude
+      # does, so the same injection + skip-worktree shield applies. The
+      # central prompt at prompts/sonar-fix-agent.md is agent-agnostic.
+      - name: Inject sonar-fix agent prompt into AGENTS.md
+        run: |
+          if [ -f AGENTS.md ]; then
+            git update-index --skip-worktree AGENTS.md
+            printf '\n\n---\n\n' >> AGENTS.md
+          else
+            echo "AGENTS.md" >> .git/info/exclude
+          fi
+          cat .sonar-fix-action/prompts/sonar-fix-agent.md >> AGENTS.md
+          echo "Injected sonar-fix agent prompt into AGENTS.md ($(wc -l < AGENTS.md) lines total)"
+
+      # Pre-create $CODEX_HOME so we can write our config.toml into it
+      # before the action runs. The codex-action accepts a `codex-home`
+      # input that points it at this directory; the CLI then reads
+      # $CODEX_HOME/config.toml for MCP servers and provider settings.
+      #
+      # Place under $RUNNER_TEMP, NOT /tmp. The codex CLI refuses to
+      # install PATH helper binaries when its home is under /tmp as a
+      # security precaution and emits "Refusing to create helper
+      # binaries under temporary dir /tmp" — degrading some
+      # functionality silently. $RUNNER_TEMP is /home/runner/work/_temp
+      # on hosted Linux runners, which the CLI accepts.
+      - name: Resolve Codex home
+        id: resolve-codex-home
+        run: |
+          DIR="$(mktemp -d "$RUNNER_TEMP/codex-home.XXXXXX")"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "Codex home: $DIR"
+
+      # Write the SonarQube MCP server entry (and, when proxying,
+      # a custom [model_providers.gateway] block) into config.toml.
+      # Mirrors the Claude path's MCP JSON construction at the
+      # workflow level: same docker run shape, same toolset selection
+      # gated by the consumer's `agentic_analysis` config field. The
+      # TOML schema differs from Claude's MCP JSON — fields are
+      # command/args/env (no top-level mcpServers wrapper) and tables
+      # are dotted (`[mcp_servers.X]`).
+      - name: Write Codex MCP + provider config
+        env:
+          CODEX_HOME: ${{ steps.resolve-codex-home.outputs.dir }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN || secrets.COPILOT_MCP_SONAR_TOKEN }}
+          SONAR_ORG: ${{ inputs.sonar-org }}
+          SONAR_HOST_URL: ${{ inputs.sonar-host-url }}
+          SONAR_PROJECT_KEY: ${{ inputs.sonar-project-key }}
+          ENABLE_AGENTIC: ${{ needs.scan-and-triage.outputs.agentic_analysis }}
+          OPENAI_BASE_URL: ${{ inputs.openai-base-url }}
+          OPENAI_CUSTOM_HEADERS: ${{ secrets.OPENAI_CUSTOM_HEADERS }}
+        run: |
+          set -e
+
+          if [ "$ENABLE_AGENTIC" = "true" ]; then
+            TOOLSETS="cag,projects,analysis,issues,quality-gates,rules"
+            ADVANCED_FLAG="true"
+          else
+            TOOLSETS="issues,projects,quality-gates,rules"
+            ADVANCED_FLAG="false"
+          fi
+          WORKSPACE_DIR="$(pwd)"
+          CONFIG="$CODEX_HOME/config.toml"
+
+          # TOML structure rule: bare top-level keys (model_provider,
+          # approval_policy, etc.) MUST be written before any [table]
+          # opens. Once a table starts, all subsequent assignments are
+          # scoped to it until another table or the file ends. So the
+          # order in this step is:
+          #   1) Top-level scalars first
+          #   2) [mcp_servers.sonarqube] + .env subtable
+          #   3) [model_providers.gateway] + .http_headers subtable (proxy only)
+          # Reversing 1 and 2 silently nests model_provider under
+          # mcp_servers.sonarqube.env, which Codex ignores — a latent bug
+          # that masked itself behind earlier failures.
+
+          # 1. Top-level scalars
+          #
+          # We do NOT write `model_provider` here, even when proxying.
+          # The codex-action's writeProxyConfig step runs after this
+          # one and unconditionally PREPENDS its own
+          # `model_provider = "codex-action-responses-proxy"` line at
+          # the very top of the file (see the action's
+          # src/writeProxyConfig.ts). Writing our own top-level
+          # model_provider produces a TOML duplicate-key parse error.
+          #
+          # Instead we keep our [model_providers.gateway] table in this
+          # file (so codex CLI knows what "gateway" resolves to) and
+          # override the active provider selection via a `-c` CLI flag
+          # in the action's codex-args input below. The `-c` flag is
+          # global = true in codex-rs, so it applies on `exec` and
+          # wins over whatever config.toml says.
+          {
+            # Set approval_policy to "never" so codex exec never pauses
+            # for human approval in CI. Pairs with sandbox: danger-full-access
+            # on the action invocation below — together they're the
+            # equivalent of --yolo, which is the right shape for an
+            # ephemeral CI runner that's already wrapped in bubblewrap +
+            # drop-sudo by the action itself.
+            echo 'approval_policy = "never"'
+            echo ''
+          } > "$CONFIG"
+
+          # 2. [mcp_servers.sonarqube] table — branch on Cloud (org set)
+          # vs Server (no org). Difference: whether SONARQUBE_ORG and
+          # SONARQUBE_ADVANCED_ANALYSIS_ENABLED are forwarded into the
+          # MCP server's container env.
+          if [ -n "$SONAR_ORG" ]; then
+            cat >> "$CONFIG" << TOMLEOF
+          [mcp_servers.sonarqube]
+          command = "docker"
+          args = [
+            "run", "--rm", "-i", "--init", "--pull=never",
+            "-e", "SONARQUBE_TOKEN",
+            "-e", "SONARQUBE_ORG",
+            "-e", "SONARQUBE_URL",
+            "-e", "SONARQUBE_PROJECT_KEY",
+            "-e", "SONARQUBE_TOOLSETS",
+            "-e", "SONARQUBE_ADVANCED_ANALYSIS_ENABLED",
+            "-v", "${WORKSPACE_DIR}:/app/mcp-workspace:rw",
+            "mcp/sonarqube",
+          ]
+          startup_timeout_sec = 30
+
+          [mcp_servers.sonarqube.env]
+          SONARQUBE_TOKEN = "${SONAR_TOKEN}"
+          SONARQUBE_ORG = "${SONAR_ORG}"
+          SONARQUBE_URL = "${SONAR_HOST_URL}"
+          SONARQUBE_PROJECT_KEY = "${SONAR_PROJECT_KEY}"
+          SONARQUBE_TOOLSETS = "${TOOLSETS}"
+          SONARQUBE_ADVANCED_ANALYSIS_ENABLED = "${ADVANCED_FLAG}"
+          TOMLEOF
+          else
+            cat >> "$CONFIG" << TOMLEOF
+          [mcp_servers.sonarqube]
+          command = "docker"
+          args = [
+            "run", "--rm", "-i", "--init", "--pull=never",
+            "-e", "SONARQUBE_TOKEN",
+            "-e", "SONARQUBE_URL",
+            "-e", "SONARQUBE_PROJECT_KEY",
+            "-e", "SONARQUBE_TOOLSETS",
+            "-v", "${WORKSPACE_DIR}:/app/mcp-workspace:rw",
+            "mcp/sonarqube",
+          ]
+          startup_timeout_sec = 30
+
+          [mcp_servers.sonarqube.env]
+          SONARQUBE_TOKEN = "${SONAR_TOKEN}"
+          SONARQUBE_URL = "${SONAR_HOST_URL}"
+          SONARQUBE_PROJECT_KEY = "${SONAR_PROJECT_KEY}"
+          SONARQUBE_TOOLSETS = "${TOOLSETS}"
+          TOMLEOF
+          fi
+
+          # 3. [model_providers.gateway] — only when proxying. The
+          # top-level model_provider = "gateway" key (written above)
+          # makes codex CLI consult this entry instead of the built-in
+          # openai provider.
+          if [ -n "$OPENAI_BASE_URL" ]; then
+            echo "Routing Codex through proxy: $OPENAI_BASE_URL"
+            cat >> "$CONFIG" << TOMLEOF
+
+          [model_providers.gateway]
+          name = "OpenAI proxy"
+          base_url = "${OPENAI_BASE_URL}"
+          env_key = "OPENAI_API_KEY"
+          wire_api = "responses"
+          TOMLEOF
+
+            # Translate the line-delimited "Header: value" secret into
+            # TOML rows under [model_providers.gateway.http_headers].
+            # Headers may contain colons in their values (e.g. Bearer
+            # tokens), so split only on the FIRST colon.
+            if [ -n "$OPENAI_CUSTOM_HEADERS" ]; then
+              {
+                echo ""
+                echo "[model_providers.gateway.http_headers]"
+              } >> "$CONFIG"
+              while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                name="${line%%:*}"
+                value="${line#*:}"
+                value="${value# }"
+                printf '"%s" = "%s"\n' "$name" "$value" >> "$CONFIG"
+              done <<< "$OPENAI_CUSTOM_HEADERS"
+            fi
+          fi
+
+          echo "Wrote Codex config (toolsets=${TOOLSETS}, agentic=${ADVANCED_FLAG}, proxy=$([ -n "$OPENAI_BASE_URL" ] && echo yes || echo no))"
+          # Don't cat the config back — it embeds the SonarQube token
+          # and (when proxying) the gateway's auth headers.
+
+      - name: Pull MCP server image
+        run: docker pull mcp/sonarqube
+
+      # Mirror of the Claude proxy validation: catch the common
+      # mistake of setting OPENAI_CUSTOM_HEADERS as a Secret while
+      # forgetting to set OPENAI_BASE_URL as a Variable in the caller
+      # repo. Without this check the workflow silently runs against
+      # direct OpenAI even though the user intended to proxy.
+      - name: Validate proxy config
+        if: inputs.openai-base-url == ''
+        env:
+          CUSTOM_HEADERS: ${{ secrets.OPENAI_CUSTOM_HEADERS }}
+        run: |
+          if [ -n "$CUSTOM_HEADERS" ]; then
+            echo "::error::OPENAI_CUSTOM_HEADERS is set but openai-base-url is empty (vars.OPENAI_BASE_URL on the calling repo isn't set). URLs go in repo Variables — see README Phase 1.6."
+            exit 1
+          fi
+          echo "No proxy configured — Codex will call OpenAI directly."
+
+      # The Codex CLI reads its bearer token from $OPENAI_API_KEY at
+      # request time (per `env_key = "OPENAI_API_KEY"` on the
+      # [model_providers.gateway] block we wrote into config.toml a few
+      # steps back). codex-action takes its `openai-api-key` input but
+      # consumes it internally for its local Responses API proxy — it
+      # does NOT export it as an env var for the codex exec call that
+      # follows. So without this push, the env_key lookup at request
+      # time finds nothing and the gateway sees an empty Authorization
+      # header.
+      #
+      # When OPENAI_API_KEY is set in secrets (real OpenAI key for
+      # direct or Helicone use, OR a Portkey virtual key like pk_xxxxx
+      # that Portkey resolves to the real provider key), preserve it.
+      # When unset, push "dummy" — works for the rare gateway that
+      # ignores the bearer entirely (e.g., a custom-header-auth proxy
+      # configured via OPENAI_CUSTOM_HEADERS).
+      #
+      # Skipped in direct-OpenAI mode because codex-action's local
+      # proxy handles auth correctly when our config.toml doesn't
+      # override `model_provider`.
+      - name: Configure OpenAI endpoint (proxy support)
+        if: inputs.openai-base-url != ''
+        env:
+          API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -n "$API_KEY" ]; then
+            echo "OPENAI_API_KEY=$API_KEY" >> "$GITHUB_ENV"
+          else
+            echo "OPENAI_API_KEY=dummy" >> "$GITHUB_ENV"
+          fi
+
+      # openai-api-key handling has two regimes:
+      #
+      # Direct OpenAI (no proxy): pass the real secret. The action starts
+      # its local Responses API proxy with that key as upstream auth, and
+      # codex CLI talks to localhost:<port>. Standard path.
+      #
+      # Proxy mode (openai-base-url set): pass the literal "dummy" string,
+      # NOT the user's real key. Two reasons:
+      #   1. Our config.toml's [model_providers.gateway] makes codex CLI
+      #      bypass the action's local proxy entirely and talk directly
+      #      to the gateway. The local proxy is dead weight in this path.
+      #   2. The action starts codex-responses-api-proxy regardless, and
+      #      that proxy validates its API key against ASCII letters,
+      #      numbers, '-' or '_'. Real Portkey keys (and other gateway
+      #      credentials) often contain '.' or other separators — they
+      #      fail that validation, killing the run before Codex ever starts.
+      # The user's actual gateway credential is still wired up — it's in
+      # $OPENAI_API_KEY env (pushed to $GITHUB_ENV by the Configure
+      # OpenAI endpoint step above), where codex CLI reads it via the
+      # `env_key = "OPENAI_API_KEY"` line in our config.toml's gateway
+      # provider block.
+
+      # Configure git user before Codex runs.
+      #
+      # Without this step, the LLM running inside Codex fabricates a
+      # placeholder identity (e.g. "Sonar Fix Agent
+      # <sonar-fix-agent@example.com>") when it needs to satisfy
+      # git's "Please tell me who you are" prompt at commit time —
+      # neither the codex-action source nor the codex-rs CLI nor our
+      # prompt sets one, so the model improvises. That breaks the
+      # post-fix loop because GitHub silently drops `pull_request:
+      # synchronize` events for commits whose authors don't resolve
+      # to a recognized GitHub identity.
+      #
+      # Identity choice matters more than I first thought:
+      #   - claude[bot], copilot-swe-agent[bot] (third-party Apps): ✓
+      #     pull_request:synchronize fires, downstream builds run.
+      #   - github-actions[bot] (the GITHUB_TOKEN identity): ✗
+      #     GitHub's recursive-trigger protection suppresses
+      #     downstream workflows for ANY commit authored by this
+      #     bot, regardless of how it's pushed (PAT or GITHUB_TOKEN).
+      #
+      # So we use the PAT owner's identity instead of
+      # github-actions[bot]. We discover the owner dynamically by
+      # querying /user with the PAT itself — that way this works for
+      # any consumer's PAT setup without per-repo configuration. The
+      # noreply email format `<id>+<login>@users.noreply.github.com`
+      # is the canonical attribution form that GitHub recognizes.
+      #
+      # When AGENT_PUSH_TOKEN isn't set, we fall back to
+      # github-actions[bot]. The post-fix loop won't iterate in that
+      # case anyway (the existing GITHUB_TOKEN fallback in the push
+      # step doesn't trigger downstream workflows either), so the
+      # identity choice doesn't matter for the fallback — but giving
+      # the model a ready-made identity still prevents it from
+      # improvising the broken @example.com one.
+      #
+      # Claude and Copilot don't need this step — their actions
+      # explicitly configure their own bot identities (`claude[bot]`,
+      # `copilot-swe-agent[bot]`) before any commit.
+      - name: Configure git user for the agent's commits
+        env:
+          PUSH_TOKEN: ${{ secrets.AGENT_PUSH_TOKEN }}
+          GH_API: ${{ github.api_url }}
+        run: |
+          if [ -n "$PUSH_TOKEN" ]; then
+            USER_JSON=$(curl -sf \
+              -H "Authorization: token $PUSH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "${GH_API}/user" || true)
+          fi
+          if [ -n "${USER_JSON:-}" ]; then
+            LOGIN=$(printf '%s' "$USER_JSON" | jq -r '.login // empty')
+            ID=$(printf '%s' "$USER_JSON" | jq -r '.id // empty')
+            if [ -n "$LOGIN" ] && [ -n "$ID" ]; then
+              EMAIL="${ID}+${LOGIN}@users.noreply.github.com"
+              git config --global user.email "$EMAIL"
+              git config --global user.name "$LOGIN"
+              echo "git user set to AGENT_PUSH_TOKEN owner: $LOGIN <$EMAIL>"
+              exit 0
+            fi
+          fi
+          # Fallback — AGENT_PUSH_TOKEN not set or /user lookup failed.
+          # github-actions[bot] won't trigger the post-fix loop, but
+          # it still beats the LLM's improvised @example.com identity.
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          echo "::warning::AGENT_PUSH_TOKEN not set or unreachable — falling back to github-actions[bot] commit identity. The post-fix loop won't iterate; comment '/sonar-fix' on the PR to re-trigger manually after each fix push."
+
+      - name: Run Codex to fix issues
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ inputs.openai-base-url != '' && 'dummy' || secrets.OPENAI_API_KEY }}
+          codex-home: ${{ steps.resolve-codex-home.outputs.dir }}
+          model: ${{ inputs.codex-model }}
+          # Effectively yolo mode for the inner sandbox: combined with
+          # approval_policy = "never" in config.toml above, this is the
+          # equivalent of `codex exec --yolo`. We want this in CI because:
+          #   1) The action already runs codex inside bubblewrap with
+          #      sudo dropped (safety-strategy: drop-sudo below) — so
+          #      codex's internal sandbox is a redundant inner layer.
+          #   2) The MCP server is launched as a `docker run` subprocess
+          #      from inside codex; workspace-write may interfere with
+          #      that depending on bubblewrap config.
+          #   3) The runner is ephemeral — blast radius is one job.
+          # If you ever run codex-fix outside an ephemeral, bubblewrap'd
+          # CI runner, reconsider this knob.
+          sandbox: danger-full-access
+          safety-strategy: drop-sudo
+          # codex-action refuses bot-actor triggers unless the actor
+          # login appears in allow-bot-users. For an issue_comment
+          # event the actor IS the comment author, so we get one of:
+          # SonarCloud's QG bot, SonarCloud's reviewer-guide bot
+          # (`sonarclouddev<N>[bot]`, with a tenant-specific suffix
+          # number we can't hardcode), or a human via /sonar-fix. The
+          # caller's job-level `if:` filter has already gated the
+          # trigger to those three sources, so trusting github.actor
+          # here is safe — defense already enforced one layer up.
+          #
+          # The configured QG bot login is also passed for explicit
+          # documentation; github.actor already covers it when QG bot
+          # triggers.
+          allow-bots: 'true'
+          allow-bot-users: ${{ format('{0},{1}', vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]', github.actor) }}
+          # No --max-turns equivalent in codex exec; runaway protection
+          # comes from approval_policy = "never" in config.toml (no
+          # human gate to accidentally hang on) plus the natural
+          # completion of the task. If cost becomes an issue, switch to
+          # a config-toml `model_auto_compact_token_limit` setting.
+          #
+          # In proxy mode we pass `-c model_provider=gateway` here to
+          # override the action's prepended
+          # `model_provider = "codex-action-responses-proxy"` line in
+          # config.toml. The `-c / --config` flag is global = true in
+          # codex-rs and works on `exec`. Empty in direct-OpenAI mode
+          # so codex picks up the action's local-proxy provider, which
+          # is the correct path there.
+          codex-args: ${{ inputs.openai-base-url != '' && '["-c", "model_provider=gateway"]' || '' }}
+          prompt: |
+            Fix the SonarQube issues listed below in this pull request.
+
+            Follow the Guide → Fix → Verify protocol described in `AGENTS.md`
+            in the repo root. That file is the single source of truth for the
+            tool sequence, rule lookup, verification cycles, commit format,
+            and guardrails. The workflow has just injected the central
+            sonar-fix instructions into it — read AGENTS.md before you start.
+
+            ${{ needs.scan-and-triage.outputs.agentic_analysis == 'true' && format('Note: agentic analysis is ENABLED for this run. When you call `run_advanced_code_analysis`, pass `branchName: "{0}"`.', inputs.pr-branch) || 'Note: agentic analysis is DISABLED for this run; skip the VERIFY step that calls `run_advanced_code_analysis` and review your changes for correctness instead.' }}
+
+            ## Issues to fix
+
+            ```json
+            ${{ toJSON(fromJSON(needs.scan-and-triage.outputs.issues_json).auto_fix) }}
+            ```
+
+      # Identical to claude-fix's push step — Codex commits in our
+      # runner under whatever git identity is configured, and we own
+      # the push. Same loop-iteration story: AGENT_PUSH_TOKEN fires
+      # downstream workflows; GITHUB_TOKEN doesn't (recursive-trigger
+      # protection) and stalls the loop after one iteration.
+      - name: Push agent commits
+        env:
+          PR_BRANCH: ${{ inputs.pr-branch }}
+          PUSH_PAT: ${{ secrets.AGENT_PUSH_TOKEN }}
+          DEFAULT_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ -n "$PUSH_PAT" ]; then
+            echo "Using AGENT_PUSH_TOKEN — pushes will trigger downstream workflows, so the auto-fix loop will continue iterating until QG passes or the loop guard trips."
+            TOKEN="$PUSH_PAT"
+          else
+            echo "::warning::AGENT_PUSH_TOKEN not set. Falling back to GITHUB_TOKEN. Pushes will succeed but won't trigger downstream workflows (per GHA's recursive-trigger protection), so the auto-fix loop stalls after one fix unless someone re-comments /sonar-fix. To get full loop behaviour, add a PAT secret AGENT_PUSH_TOKEN — see README Phase 1."
+            TOKEN="$DEFAULT_TOKEN"
+          fi
+
+          # actions/checkout@v4 sets a persistent
+          # `http.https://github.com/.extraheader` config carrying an
+          # AUTHORIZATION header derived from the workflow's
+          # GITHUB_TOKEN. That header is sent on every git request from
+          # this runner, so our PAT-in-the-URL ends up competing with a
+          # GITHUB_TOKEN-in-the-extraheader for the actual push. When
+          # the extraheader's GITHUB_TOKEN wins, the push is
+          # effectively attributed to github-actions[bot], GHA's
+          # recursive-trigger protection kicks in, and no
+          # `pull_request: synchronize` event fires — the consumer's
+          # build doesn't re-run, SonarCloud doesn't re-analyze, and
+          # the post-fix loop stalls with a stale triage report.
+          #
+          # claude-code-action apparently clears this during its own
+          # auth handling (Claude pushes fire downstream cleanly).
+          # codex-action doesn't, which is why the Codex path stalled.
+          # Unsetting it explicitly here makes only the URL credential
+          # remain, so the push is PAT-attributed and downstream events
+          # fire as expected. No-op if the extraheader is already
+          # absent.
+          git config --local --unset-all http.https://github.com/.extraheader || true
+
+          git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${GH_REPO}.git"
+          git fetch origin "$PR_BRANCH" --quiet
+          NEW_COMMITS=$(git rev-list --count "origin/$PR_BRANCH..HEAD" 2>/dev/null || echo 0)
+          if [ "$NEW_COMMITS" = "0" ]; then
+            echo "No new commits from the agent — nothing to push."
+            exit 0
+          fi
+          echo "Pushing $NEW_COMMITS commit(s) to origin/$PR_BRANCH:"
+          git log --oneline "origin/$PR_BRANCH..HEAD"
+          git push origin "HEAD:refs/heads/$PR_BRANCH"

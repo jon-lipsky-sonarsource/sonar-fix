@@ -1,0 +1,420 @@
+# =============================================================================
+# Caller Workflow: SonarQube Fix — Comment Triggered
+# =============================================================================
+# Fires on any of three PR comment events:
+#
+#   1. SonarCloud's QG bot (`sonarqubecloud[bot]`) posts or edits its
+#      quality gate summary comment. Fires a fix run when QG failed.
+#      Note: this bot only EDITS the comment when QG status changes —
+#      a partial fix that leaves QG still-failed produces no edit, so
+#      we also listen for #2 below to keep the loop alive.
+#
+#   2. SonarCloud's reviewer-guide bot (`sonarclouddev<N>[bot]`) posts
+#      a fresh comment on every analysis, regardless of QG state.
+#      That makes it the reliable signal that "SonarCloud has new
+#      data" — particularly useful after a partial fix where the QG
+#      bot stays silent. Each post triggers an updated triage report;
+#      the agent dispatch downstream is gated on `has_auto_fix`, so
+#      "all clear" runs are cheap.
+#
+#   3. A repo collaborator comments "/sonar-fix" on a PR.
+#      Manual override — runs regardless of QG status, bypasses loop guard.
+#      Useful when the bots are quiet or when piloting the flow before
+#      enabling full automation.
+#
+# Why event-driven: every state transition (Sonar re-analysis, human ask)
+# surfaces as a comment event. No polling, no sleeps, no scheduled runs.
+# Crucially this also works for SonarCloud Autoscan repos that don't
+# have a CI build workflow we could otherwise listen to via workflow_run.
+#
+# Loop guard: counts prior fix commits on the PR (by message prefix
+# "fix: resolve SonarQube issues") and skips bot-triggered runs once the
+# count exceeds MAX_FIX_ATTEMPTS. The slash command always wins.
+#
+# Prerequisites (depend on which agent your config picks):
+#   - SonarCloud PR summary comments enabled:
+#     Administration → Pull Requests → Integration with GitHub → Enable summary
+#   - Repository secret: SONAR_TOKEN
+#   - Repository variables: SONAR_PROJECT_KEY, SONAR_ORG
+#   - .github/sonar-fix-config.yml with `agent:` set to `claude`, `copilot`,
+#     `codex`, `all`, or any comma-separated combination — or rely on the
+#     central default at config/default.yml in this repo
+#
+# For the Claude path (`agent` includes `claude`):
+#   - Repository secret: ANTHROPIC_API_KEY (or skip if proxying via Portkey)
+#   - Repository secret: AGENT_PUSH_TOKEN (PAT — required for full loop)
+#   - Claude Code GitHub App installed (https://github.com/apps/claude)
+#
+# For the Copilot path (`agent` includes `copilot`):
+#   - Repository secret: COPILOT_PAT
+#   - Copilot Coding Agent enabled on the repo
+#   - SonarQube MCP configured in Copilot's settings
+#
+# For the Codex path (`agent` includes `codex`):
+#   - Repository secret: OPENAI_API_KEY
+#   - Repository secret: AGENT_PUSH_TOKEN (PAT — required for full loop;
+#     same one Claude uses, since both push from the runner)
+#   - (Optional) vars.OPENAI_BASE_URL + secrets.OPENAI_CUSTOM_HEADERS
+#     when routing through Portkey/Helicone/internal proxy
+#
+# Bot logins — SonarCloud has two bots, both involved in our trigger flow:
+#   - QG bot: `sonarqubecloud[bot]` by default. Configurable via the
+#     `SONAR_BOT_LOGIN` repo variable (Settings → Secrets and variables
+#     → Actions → Variables) — set this if your product uses a different
+#     name (older `sonarcloud[bot]`, on-prem variant, etc.). Both the
+#     job-level `if:` filter and the workflow-level `env` below read
+#     from the same variable.
+#   - Reviewer-guide bot: `sonarclouddev<N>[bot]` (the trailing digit
+#     is a SonarCloud-side instance identifier; we match by `startsWith
+#     'sonarclouddev'` so any number works). Hard-coded — if SonarCloud
+#     ever changes the prefix this needs a one-line edit in the filter.
+# =============================================================================
+
+name: "SonarQube Fix (Comment Triggered)"
+
+on:
+  # Fires when a comment is created OR edited on an issue or PR.
+  # `edited` matters because SonarCloud often updates its existing summary
+  # comment in place after a re-analysis instead of posting a new one.
+  issue_comment:
+    types: [created, edited]
+
+# Cancel in-flight fix runs only when a NEWER MATCHING comment arrives.
+#
+# Subtle: GHA evaluates concurrency at the workflow level, before the job-
+# level `if:` filter. If we used a single group for every issue_comment
+# event on the PR, an unrelated comment (a human discussion, an unrelated
+# bot, etc.) would cancel an in-flight legitimate run before its filter
+# could skip it.
+#
+# Trick: ALL events from any of our trusted trigger sources (the QG bot,
+# the reviewer-guide bot, or a /sonar-fix slash command) share the
+# `sonar-fix-pr-{N}-match` group, so they cancel each other and the
+# most recent fresh signal wins. Non-matching events fall into a
+# unique group keyed on comment id, so they don't cancel anything.
+#
+# Note on the dual-bot interaction: SonarCloud posts two comments per
+# analysis (QG bot first, reviewer-guide bot ~3 seconds later). Both
+# end up in the match group on purpose — they reflect the same
+# analysis, so the second one cancelling the first is fine; either
+# triggers the same downstream triage.
+#
+# The match condition mirrors the job-level `if:` filter (minus the
+# author_association check on /sonar-fix, which is a string and would
+# over-complicate this expression — auth is still enforced at the
+# job level).
+concurrency:
+  group: >-
+    ${{ format('sonar-fix-pr-{0}-{1}',
+        github.event.issue.number,
+        ((github.event.comment.user.login == (vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]')
+          && contains(github.event.comment.body, 'Quality Gate'))
+         || (startsWith(github.event.comment.user.login, 'sonarclouddev')
+             && contains(github.event.comment.body, 'SonarQube'))
+         || contains(github.event.comment.body, '/sonar-fix'))
+        && 'match'
+        || github.event.comment.id) }}
+  cancel-in-progress: true
+
+# The reusable workflow needs to push commits (contents: write) and post
+# review comments on the PR (pull-requests: write, issues: write). When the
+# repo's "Default workflow permissions" is the read-only default, this block
+# is required — without it GitHub rejects the workflow at validation time
+# with "Error calling workflow ... is requesting 'contents: write' but is
+# only allowed 'contents: read'". Granting at the caller level keeps the
+# auth surface explicit and means consumers don't have to flip repo settings.
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  # Required by claude-code-action — it fetches an OIDC token to authenticate
+  # to Anthropic's auth backend (even when proxying). Without this, the
+  # claude-code-action step fails with "Could not fetch an OIDC token".
+  id-token: write
+
+env:
+  # Bot login. Override by setting `SONAR_BOT_LOGIN` as a repo variable
+  # (Settings → Secrets and variables → Actions → Variables). The job-level
+  # `if:` filter below reads from the same source, so a single repo-variable
+  # change is enough — no need to edit this file.
+  SONAR_BOT_LOGIN: ${{ vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]' }}
+  # Loop guard: max number of fix commits the bot may add to a single PR
+  # before further bot-triggered runs are skipped. The /sonar-fix slash command
+  # bypasses this cap (manual override). Bump if you want longer fix loops.
+  MAX_FIX_ATTEMPTS: "3"
+  # Commit message prefix used to count prior fix attempts on this PR.
+  # Must match the commit message the agent is told to use in the reusable
+  # workflow's prompt. Don't change one without changing the other.
+  FIX_COMMIT_PREFIX: "fix: resolve SonarQube issues"
+
+jobs:
+  # =========================================================================
+  # Job 1: Detect SonarCloud comment and resolve PR context
+  # =========================================================================
+  detect-and-resolve:
+    name: "Detect Trigger & Resolve PR"
+    runs-on: ubuntu-latest
+
+    # Run if ANY of:
+    #   A) Comment is on a PR, from the SonarCloud QG bot, mentions
+    #      "Quality Gate" → triggered by a QG status update.
+    #   B) Comment is on a PR, from the SonarCloud reviewer-guide bot
+    #      (`sonarclouddev<N>[bot]`), contains "SonarQube" → fresh
+    #      analysis just landed, regardless of whether QG flipped.
+    #   C) Comment is on a PR, from a user with write access, contains
+    #      "/sonar-fix" → manual override.
+    #
+    # The author_association check on (C) is critical for public repos:
+    # without it, any drive-by commenter could trigger billable agent
+    # runs on your PRs.
+    if: |
+      github.event.issue.pull_request && (
+        (
+          github.event.comment.user.login == (vars.SONAR_BOT_LOGIN || 'sonarqubecloud[bot]') &&
+          contains(github.event.comment.body, 'Quality Gate')
+        ) || (
+          startsWith(github.event.comment.user.login, 'sonarclouddev') &&
+          contains(github.event.comment.body, 'SonarQube')
+        ) || (
+          contains(github.event.comment.body, '/sonar-fix') &&
+          (
+            github.event.comment.author_association == 'OWNER' ||
+            github.event.comment.author_association == 'MEMBER' ||
+            github.event.comment.author_association == 'COLLABORATOR'
+          )
+        )
+      )
+
+    outputs:
+      pr_number: ${{ steps.pr-info.outputs.pr_number }}
+      pr_branch: ${{ steps.pr-info.outputs.pr_branch }}
+      trigger: ${{ steps.classify.outputs.trigger }}
+      quality_gate_failed: ${{ steps.parse-comment.outputs.quality_gate_failed }}
+      attempts: ${{ steps.count-attempts.outputs.attempts }}
+      should_run: ${{ steps.decide.outputs.should_run }}
+
+    steps:
+      - name: Resolve PR details
+        id: pr-info
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // issue_comment events for PRs have issue.pull_request.url
+            // but not the full PR object. Fetch it.
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.issue.number,
+            });
+
+            core.setOutput('pr_number', pr.number);
+            core.setOutput('pr_branch', pr.head.ref);
+            core.setOutput('pr_state', pr.state);
+
+            console.log(`PR #${pr.number} — branch: ${pr.head.ref}, state: ${pr.state}`);
+
+      - name: Classify trigger (qg-bot / reviewer-guide / slash-command)
+        id: classify
+        # Pass user-controlled fields through env, never interpolate them into
+        # the script body — a comment containing shell metacharacters or a
+        # heredoc terminator could otherwise execute arbitrary commands.
+        env:
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          if [ "$COMMENT_AUTHOR" = "$SONAR_BOT_LOGIN" ]; then
+            echo "Trigger: QG bot comment from $COMMENT_AUTHOR"
+            echo "trigger=qg-bot" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$COMMENT_AUTHOR" | grep -qE '^sonarclouddev'; then
+            echo "Trigger: reviewer-guide bot comment from $COMMENT_AUTHOR"
+            echo "trigger=reviewer-guide" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$COMMENT_BODY" | grep -qF "/sonar-fix"; then
+            echo "Trigger: /sonar-fix slash command from $COMMENT_AUTHOR"
+            echo "trigger=slash-command" >> "$GITHUB_OUTPUT"
+          else
+            # Should be unreachable given the job-level `if` filter
+            echo "Trigger: unknown — skipping"
+            echo "trigger=unknown" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Parse quality gate status from comment
+        id: parse-comment
+        # Only the QG bot's body carries pass/fail wording. The
+        # reviewer-guide bot's comment doesn't include QG status, and
+        # /sonar-fix bypasses the QG check entirely.
+        if: steps.classify.outputs.trigger == 'qg-bot'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.comment.body;
+
+            // SonarCloud comments contain "Quality Gate passed" or "Quality Gate failed"
+            // They may also use emoji: ✅ (passed) or ❌ (failed)
+            const passed = body.includes('Quality Gate passed') ||
+                           body.includes('✅');
+            const failed = body.includes('Quality Gate failed') ||
+                           body.includes('❌');
+
+            core.setOutput('quality_gate_failed', failed ? 'true' : 'false');
+            core.setOutput('quality_gate_passed', passed ? 'true' : 'false');
+
+            console.log(`Quality gate: ${failed ? 'FAILED' : passed ? 'PASSED' : 'UNKNOWN'}`);
+
+      - name: Count prior fix attempts on this PR
+        id: count-attempts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr-info.outputs.pr_number }}
+        run: |
+          # Claude/Codex path: count commits whose message starts with
+          # FIX_COMMIT_PREFIX. The workflow owns the commit and mandates
+          # that prefix, so every prior fix run shows up as exactly one
+          # matching commit.
+          FIX_COMMITS=$(gh api \
+            "repos/${{ github.repository }}/pulls/${PR_NUMBER}/commits" \
+            --paginate \
+            --jq "[.[] | select(.commit.message | startswith(\"${FIX_COMMIT_PREFIX}\"))] | length")
+
+          # Copilot path: Copilot runs out-of-band and uses its own commit
+          # message format, so FIX_COMMITS stays 0 on the Copilot path and
+          # the loop guard never trips. Instead, count how many times our
+          # workflow has already posted an @copilot dispatch comment.
+          COPILOT_DISPATCHES=$(gh api \
+            "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --paginate \
+            --jq '[.[] | select(.body | startswith("@copilot Please fix the following SonarQube"))] | length')
+
+          # Use whichever is higher as the canonical attempt count.
+          if [ "$COPILOT_DISPATCHES" -gt "$FIX_COMMITS" ]; then
+            ATTEMPTS="$COPILOT_DISPATCHES"
+          else
+            ATTEMPTS="$FIX_COMMITS"
+          fi
+          # Detect if the most recent PR commit was from Copilot. When true,
+          # reviewer-guide triggers are suppressed — Copilot is either still
+          # working or just finished; the QG-bot drives the next iteration if
+          # issues remain. Keeps PR comment noise on par with Claude/Codex.
+          LAST_AUTHOR=$(gh api \
+            "repos/${{ github.repository }}/pulls/${PR_NUMBER}/commits" \
+            --paginate \
+            --jq 'last | .author.login // .commit.author.name' 2>/dev/null || echo "")
+          if echo "$LAST_AUTHOR" | grep -qi "copilot"; then
+            COPILOT_JUST_COMMITTED="true"
+          else
+            COPILOT_JUST_COMMITTED="false"
+          fi
+
+          echo "Prior fix commits: ${FIX_COMMITS}, Copilot dispatches: ${COPILOT_DISPATCHES} → attempts=${ATTEMPTS}, copilot_just_committed=${COPILOT_JUST_COMMITTED}"
+          echo "attempts=${ATTEMPTS}" >> "$GITHUB_OUTPUT"
+          echo "copilot_just_committed=${COPILOT_JUST_COMMITTED}" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether to run fix
+        id: decide
+        run: |
+          PR_STATE="${{ steps.pr-info.outputs.pr_state }}"
+          TRIGGER="${{ steps.classify.outputs.trigger }}"
+          QG_FAILED="${{ steps.parse-comment.outputs.quality_gate_failed }}"
+          ATTEMPTS="${{ steps.count-attempts.outputs.attempts }}"
+
+          # Don't run on closed/merged PRs
+          if [ "$PR_STATE" != "open" ]; then
+            echo "PR is not open (state=$PR_STATE). Skipping."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$TRIGGER" = "slash-command" ]; then
+            # Manual override — run regardless of QG status or attempt count.
+            # Authorization was already enforced by the job-level `if`.
+            echo "Slash command from authorized user. Running (bypassing loop cap)."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          COPILOT_JUST_COMMITTED="${{ steps.count-attempts.outputs.copilot_just_committed }}"
+
+          if [ "$TRIGGER" = "reviewer-guide" ]; then
+            # Suppress reviewer-guide triggers when Copilot just committed.
+            # Copilot commits per-issue, so each incremental push fires a new
+            # analysis cycle. Without this guard, we'd re-dispatch Copilot on
+            # every intermediate commit while it's still mid-run. The QG-bot
+            # drives re-dispatch once Copilot's full run settles.
+            if [ "$COPILOT_JUST_COMMITTED" = "true" ]; then
+              echo "Reviewer-guide trigger but Copilot recently committed — suppressing to reduce noise."
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$ATTEMPTS" -gt "$MAX_FIX_ATTEMPTS" ]; then
+              echo "Loop guard tripped: ${ATTEMPTS} prior fix commits on this PR (max ${MAX_FIX_ATTEMPTS}). Comment '/sonar-fix' to override."
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Reviewer-guide trigger; running."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # qg-bot path: respect QG status and the loop guard.
+          if [ "$QG_FAILED" != "true" ]; then
+            echo "Quality gate passed (or status unknown). Skipping fix."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Suppress QG-bot re-dispatch when Copilot has committed since our
+          # last dispatch. The QG-bot edits its comment on every analysis
+          # (not just on QG status changes), so without this check we'd
+          # re-dispatch Copilot after every incremental commit while it's
+          # still mid-run. If QG is still failing after Copilot's commits,
+          # comment '/sonar-fix' to force another attempt.
+          if [ "$COPILOT_JUST_COMMITTED" = "true" ]; then
+            echo "QG-bot trigger but Copilot recently committed — suppressing to reduce noise. Comment '/sonar-fix' to force another attempt."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$ATTEMPTS" -gt "$MAX_FIX_ATTEMPTS" ]; then
+            echo "Loop guard tripped: ${ATTEMPTS} prior fix commits on this PR (max ${MAX_FIX_ATTEMPTS})."
+            echo "Comment '/sonar-fix' on the PR to override and force another attempt."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Quality gate failed and within attempt cap (${ATTEMPTS}/${MAX_FIX_ATTEMPTS}). Running fix."
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+
+  # =========================================================================
+  # Job 2: Call the reusable fix workflow
+  # =========================================================================
+  fix:
+    name: "Fix"
+    needs: detect-and-resolve
+    if: needs.detect-and-resolve.outputs.should_run == 'true'
+    uses: my-org/sonar-fix/.github/workflows/fix.yml@v1
+    with:
+      sonar-project-key: ${{ vars.SONAR_PROJECT_KEY || vars.COPILOT_MCP_SONAR_PROJECT_KEY }}
+      sonar-org: ${{ vars.SONAR_ORG || vars.COPILOT_MCP_SONAR_ORG }}
+      # SonarCloud has multiple regional URLs (sonarcloud.io, sonarcloud.us,
+      # SonarQube Server self-hosted instances at custom domains, etc.). Set
+      # `vars.SONAR_HOST_URL` (or `vars.COPILOT_MCP_SONAR_HOST_URL`) to your
+      # actual host. The trailing literal is the global SonarCloud default
+      # for users who set neither.
+      sonar-host-url: ${{ vars.SONAR_HOST_URL || vars.COPILOT_MCP_SONAR_HOST_URL || 'https://sonarcloud.io' }}
+      pr-number: ${{ fromJSON(needs.detect-and-resolve.outputs.pr_number) }}
+      pr-branch: ${{ needs.detect-and-resolve.outputs.pr_branch }}
+      run-sonar-scan: false   # Analysis already ran — SonarCloud told us so!
+      # The reusable workflow accepts the union of inputs across all
+      # agent paths. Inputs that don't apply to the active agent are
+      # silently ignored — leave them in place so switching `agent:` in
+      # sonar-fix-config.yml is the only edit needed when changing paths.
+      #
+      # Claude-path inputs (used when `agent` includes `claude`):
+      anthropic-base-url: ${{ vars.ANTHROPIC_BASE_URL }}   # empty = direct
+      show-full-output: ${{ vars.SHOW_FULL_OUTPUT == 'true' }}
+      # claude-model: "claude-sonnet-4-6"
+      # config-path: ".github/sonar-fix-config.yml"
+      #
+      # Codex-path inputs (used when `agent` includes `codex`):
+      openai-base-url: ${{ vars.OPENAI_BASE_URL }}         # empty = direct
+      codex-model: ${{ vars.CODEX_MODEL }}                 # empty = Codex default
+    secrets: inherit
